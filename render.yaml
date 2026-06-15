@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: luke-agents
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # Pin Python to a version with prebuilt wheels for our deps. 3.14 has no
+      # pydantic-core wheel yet and would try (and fail) to compile from Rust.
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      # Get a free key at https://console.groq.com/keys (email signup, no card)
+      # and paste it in the Render dashboard (sync:false keeps it out of git).
+      - key: GROQ_API_KEY
+        sync: false
+      # Best capability-per-dollar. Use moonshotai/kimi-k2-instruct for premium.
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_FALLBACK_MODEL
+        value: llama-3.3-70b-versatile
+      # Per-user cap: 200 actions per 3 hours (10800s) to bound AI spend.
+      - key: RATE_LIMIT_MAX
+        value: "200"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: "10800"
+      # Transcript store: set DATABASE_URL (the shared luke Postgres) to persist
+      # turns for fine-tuning. Tables are created in the AGENTS_DB_SCHEMA schema.
+      # Leave DATABASE_URL unset to disable durable recording (dev = JSONL files).
+      - key: DATABASE_URL
+        sync: false
+      - key: AGENTS_DB_SCHEMA
+        value: luke_agents
+      - key: TRANSCRIPTS_ENABLED
+        value: "true"

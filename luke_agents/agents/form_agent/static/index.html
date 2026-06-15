@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LukeTalks Form Builder</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6; }
+  header { padding: 14px 20px; background: #161a22; border-bottom: 1px solid #262b36; font-weight: 600; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; height: calc(100vh - 51px); }
+  section { padding: 20px; overflow-y: auto; }
+  #preview { border-left: 1px solid #262b36; background: #12141a; }
+  .row { margin-bottom: 14px; }
+  label { display: block; font-size: 13px; margin-bottom: 4px; color: #aab; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid #2c3340; background: #0d0f14; color: #e6e6e6; font-size: 14px; }
+  .req { color: #f87171; }
+  form#chat { display: flex; gap: 8px; margin-top: 12px; }
+  button { padding: 9px 16px; border: 0; border-radius: 6px; background: #4f7cff;
+    color: #fff; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { font-size: 13px; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; background: #1b2030; }
+  .msg.you { color: #9ad; }
+  h2 { margin: 0 0 16px; font-size: 16px; }
+  .hint { color: #667; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>LukeTalks Form Builder <span class="hint" id="brain"></span></header>
+<main>
+  <section>
+    <h2>Chat</h2>
+    <div id="log"></div>
+    <form id="chat">
+      <input id="msg" placeholder="e.g. add a name field and a required email" autocomplete="off" />
+      <button id="send" type="submit">Send</button>
+    </form>
+    <p class="hint">Try: “add a country dropdown with USA, India, UK”, then “make name required”.</p>
+  </section>
+  <section id="preview">
+    <h2 id="formTitle">Untitled Form</h2>
+    <div id="fields"></div>
+  </section>
+</main>
+<script>
+// Current coltorapps schema ({entities, root}) + form title.
+let schema = { entities: {}, root: [] };
+let title = "Untitled Form";
+
+// Mount-relative chat endpoint: works whether this page is served at "/" (the
+// default-agent root) or at "/agents/form/" (the namespaced mount).
+const CHAT_URL = location.pathname.replace(/\/+$/, "") + "/chat";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function send(message, attempt = 1) {
+  let res;
+  try {
+    res = await fetch(CHAT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, schema, title }),
+    });
+  } catch (netErr) {
+    throw new Error("Network error — is the service reachable? " + netErr.message);
+  }
+
+  // Read as text first so a non-JSON (HTML) response can't throw a cryptic
+  // "Unexpected token '<'". Render returns an HTML page during cold starts.
+  const raw = await res.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch (_) { /* not JSON */ }
+
+  if (!res.ok || data === null) {
+    const coldStart = res.status === 502 || res.status === 503 || data === null;
+    if (coldStart && attempt < 3) {
+      log("Service is waking up (free-tier cold start)… retrying", "you");
+      await sleep(4000);
+      return send(message, attempt + 1);  // state unchanged, safe to retry
+    }
+    const detail = (data && data.detail) || `HTTP ${res.status} ${res.statusText}`;
+    throw new Error(detail);
+  }
+
+  schema = data.schema;
+  title = data.title;
+  document.getElementById("brain").textContent = "· brain: " + data.brain;
+  render();
+}
+
+// Render a preview from the coltorapps schema ({entities, root}).
+function render() {
+  document.getElementById("formTitle").textContent = title;
+  const box = document.getElementById("fields");
+  box.innerHTML = "";
+  for (const id of (schema.root || [])) {
+    const e = (schema.entities || {})[id];
+    if (!e) continue;
+    const a = e.attributes || {};
+    const row = document.createElement("div");
+    row.className = "row";
+    const label = `<label>${a.label || id}${a.required ? ' <span class="req">*</span>' : ""}</label>`;
+    const opts = (a.options || []).map(o => `<option>${typeof o === "string" ? o : (o.label || o.value)}</option>`).join("");
+    let control;
+    if (e.type === "select") {
+      control = `<select>${opts}</select>`;
+    } else if (e.type === "radio" || e.type === "selectBoxes") {
+      const t = e.type === "radio" ? "radio" : "checkbox";
+      control = (a.options || []).map(o => {
+        const v = typeof o === "string" ? o : (o.label || o.value);
+        return `<div><input type="${t}" name="${id}" style="width:auto" /> ${v}</div>`;
+      }).join("");
+    } else if (e.type === "textarea") {
+      control = `<textarea rows="3" placeholder="${a.placeholder || ""}"></textarea>`;
+    } else if (e.type === "checkbox") {
+      control = `<input type="checkbox" style="width:auto" />`;
+    } else {
+      const t = e.type === "email" ? "email" : e.type === "number" || e.type === "currency" ? "number"
+        : e.type === "datetime" ? "datetime-local" : e.type === "phoneNumber" ? "tel" : "text";
+      control = `<input type="${t}" placeholder="${a.placeholder || ""}" />`;
+    }
+    row.innerHTML = label + control;
+    box.appendChild(row);
+  }
+}
+
+function log(text, cls) {
+  const d = document.createElement("div");
+  d.className = "msg " + (cls || "");
+  d.textContent = text;
+  document.getElementById("log").appendChild(d);
+}
+
+document.getElementById("chat").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("msg");
+  const btn = document.getElementById("send");
+  const text = input.value.trim();
+  if (!text) return;
+  log("You: " + text, "you");
+  input.value = "";
+  btn.disabled = true;
+  try {
+    await send(text);
+  } catch (err) {
+    log("Error: " + err.message);
+  } finally {
+    btn.disabled = false;
+    input.focus();
+  }
+});
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+"""Build the FastAPI app that hosts every agent.
+
+Mounting rules:
+  * Each agent's router is mounted under `/agents/<slug>`.
+  * An agent with a static UI is served at `/agents/<slug>` and `/agents/<slug>/`.
+  * The chosen default agent is ALSO mounted at the root, so a pre-existing
+    single-agent client (e.g. luke-consumer-ui hitting `POST /chat`) keeps working
+    as a drop-in against this app.
+  * `GET /health` reports the active brain and the mounted agents.
+  * `GET /` serves the default agent's UI, or a small landing page if it has none.
+"""
+from __future__ import annotations
+
+import os
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+
+import logging
+
+from .llm import active_brain
+from .registry import Agent
+from .transcripts import get_store
+
+log = logging.getLogger("luke_agents.server")
+
+
+def _mount_static(app: FastAPI, agent: Agent, prefix: str) -> None:
+    """Serve the agent's index.html at `prefix` and `prefix + "/"` (no trailing
+    slash redirect, so the client's mount-relative fetch works either way)."""
+    index = agent.static_index()
+    if index is None:
+        return
+
+    def page() -> str:
+        return index.read_text(encoding="utf-8") if index.exists() else f"<h1>{agent.meta.name}</h1>"
+
+    for path in {prefix or "/", f"{prefix}/"}:
+        app.add_api_route(path, page, methods=["GET"], response_class=HTMLResponse, include_in_schema=False)
+
+
+def build_app(agents: list[Agent], *, default_slug: str | None = None, title: str = "luke-agents") -> FastAPI:
+    if not agents:
+        raise ValueError("build_app needs at least one agent")
+    by_slug = {a.meta.slug: a for a in agents}
+    if len(by_slug) != len(agents):
+        raise ValueError("agent slugs must be unique")
+    default = by_slug.get(default_slug) if default_slug else agents[0]
+
+    app = FastAPI(title=title, version="0.1.0")
+
+    # Allow browser clients (e.g. the consumer-ui Form Builder) to call us. Set
+    # AGENTS_CORS to a comma-separated origin list in prod to lock it down.
+    origins = os.getenv("AGENTS_CORS", os.getenv("FORM_AGENT_CORS", "*"))
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if origins.strip() == "*" else [o.strip() for o in origins.split(",")],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.on_event("startup")
+    def _init_transcripts() -> None:
+        # Best-effort: create the schema/table (or JSONL dir) up front so the
+        # first chat doesn't pay for it — and so a misconfigured DSN shows up in
+        # logs at boot, not mid-request. Never blocks startup on failure.
+        store = get_store()
+        try:
+            store.init()
+            log.info("transcripts backend: %s", store.name)
+        except Exception:  # noqa: BLE001
+            log.exception("transcripts: init failed (recording will retry per-turn)")
+
+    @app.get("/health")
+    def health() -> dict:
+        return {
+            "status": "ok",
+            "brain": active_brain(),
+            "transcripts": get_store().name,
+            "default": default.meta.slug,
+            "agents": [
+                {"slug": a.meta.slug, "name": a.meta.name, "description": a.meta.description,
+                 "version": a.meta.version, "path": f"/agents/{a.meta.slug}"}
+                for a in agents
+            ],
+        }
+
+    for agent in agents:
+        prefix = f"/agents/{agent.meta.slug}"
+        app.include_router(agent.build_router(), prefix=prefix)
+        _mount_static(app, agent, prefix)
+
+    # Default agent also at root for drop-in single-agent compatibility.
+    app.include_router(default.build_router(), prefix="")
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def index() -> str:
+        default_index = default.static_index()
+        if default_index is not None and default_index.exists():
+            return default_index.read_text(encoding="utf-8")
+        links = "".join(
+            f'<li><a href="/agents/{a.meta.slug}/">{a.meta.name}</a> — {a.meta.description}</li>'
+            for a in agents
+        )
+        return f"<h1>{title}</h1><p>brain: {active_brain()}</p><ul>{links}</ul>"
+
+    return app
