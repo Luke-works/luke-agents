@@ -97,8 +97,8 @@ class AssistantTurn(BaseModel):
     )
 
 
-class TestDataTurn(BaseModel):
-    """What the LLM returns when asked to generate test data for a form."""
+class TestDataItem(BaseModel):
+    """One generated dataset."""
     values: dict = PydField(
         default_factory=dict,
         description="Map of field key -> a value to enter. For choice fields, use one of "
@@ -106,7 +106,16 @@ class TestDataTurn(BaseModel):
         "should deliberately violate the field's rules.",
     )
     notes: str = PydField(
-        default="", description="One short line on the data (e.g. which rules the invalid values break)."
+        default="", description="One short line on this dataset (the persona, or which rules the invalid values break)."
+    )
+
+
+class TestDataTurn(BaseModel):
+    """What the LLM returns when asked to generate test data for a form."""
+    datasets: List[TestDataItem] = PydField(
+        default_factory=list,
+        description="COUNT distinct datasets — meaningfully different (different realistic "
+        "personas for valid mode; different broken rules for invalid mode).",
     )
 
 
@@ -146,11 +155,11 @@ class TestDataRequest(BaseModel):
     """Ask LukeTests to generate test data to drive the builder's Test runs."""
     schema: Optional[dict] = None  # current coltorapps schema to generate values for
     mode: Literal["valid", "invalid"] = "valid"  # valid → should pass; invalid → should be rejected
+    count: int = 1  # how many distinct datasets to generate (clamped server-side)
     title: Optional[str] = None
     user_id: Optional[str] = None
 
 
 class TestDataResponse(BaseModel):
-    values: dict  # {field_key: value} to fill into the form
-    notes: str = ""
+    datasets: List[TestDataItem]  # one or more {values, notes} datasets
     brain: str

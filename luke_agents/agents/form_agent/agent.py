@@ -22,6 +22,7 @@ from .schema import (
     ChatRequest,
     ChatResponse,
     FeedbackRequest,
+    TestDataItem,
     TestDataRequest,
     TestDataResponse,
     TestDataTurn,
@@ -128,13 +129,15 @@ class FormAgent(Agent):
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title
+            count = max(1, min(req.count or 1, 5))  # cap so one call can't blow the budget
             try:
                 turn = llm.generate(
-                    TESTDATA_SYSTEM, build_testdata_message(spec, req.mode), TestDataTurn, temperature=0.5
+                    TESTDATA_SYSTEM, build_testdata_message(spec, req.mode, count), TestDataTurn, temperature=0.6
                 )
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
-            return TestDataResponse(values=turn.values, notes=turn.notes, brain=llm.active_brain())
+            datasets = turn.datasets[:count] or [TestDataItem()]
+            return TestDataResponse(datasets=datasets, brain=llm.active_brain())
 
         @router.post("/feedback")
         def feedback(req: FeedbackRequest) -> dict:

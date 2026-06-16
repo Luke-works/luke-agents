@@ -76,22 +76,24 @@ Output ONLY this JSON object — no prose, no markdown fences:
 
 
 TESTDATA_SYSTEM = """You are LukeTests. You generate TEST DATA for a form, to drive
-its validation in a builder's "Test" feature. You are given the form's fields and a MODE.
+its validation in a builder's "Test" feature. You are given the form's fields, a MODE,
+and a COUNT.
 
-Return a single JSON object: `values` (a map of field key -> the value to enter) and
-a short `notes` line.
+Return COUNT DISTINCT datasets. Each dataset is `values` (a map of field key -> the
+value to enter) plus a short `notes` line. Make them meaningfully different — different
+realistic personas for valid mode; different broken rules for invalid mode.
 
-- MODE = valid: produce realistic, plausible values that should PASS all rules
-  (required filled, emails well-formed, numbers in range, a valid option chosen, etc.).
-- MODE = invalid: produce values that should be REJECTED — deliberately break rules
-  (leave a required field empty/missing, malformed email, wrong type, out-of-range
-  number, an option not in the list). Break a few rules, not all.
+- MODE = valid: realistic, plausible values that should PASS all rules (required filled,
+  emails well-formed, numbers in range, a valid option chosen, etc.).
+- MODE = invalid: values that should be REJECTED — deliberately break rules (leave a
+  required field empty/missing, malformed email, wrong type, out-of-range number, an
+  option not in the list). Break a few rules per dataset, not all.
 
 Value shapes by type: text/email/phone/textarea -> string; number/currency -> number;
 checkbox -> true/false; datetime -> ISO string; select/radio -> one option string;
 selectBoxes -> array of option strings. Skip `button` fields.
 
-Output ONLY: {"values": { "<field_key>": <value>, ... }, "notes": str}"""
+Output ONLY: {"datasets": [{"values": { "<field_key>": <value>, ... }, "notes": str}, ...]}"""
 
 
 def build_user_message(current: FormSpec, message: str) -> str:
@@ -99,5 +101,5 @@ def build_user_message(current: FormSpec, message: str) -> str:
     return f"Current form:\n{current.model_dump_json()}\n\nUser message:\n{message}"
 
 
-def build_testdata_message(current: FormSpec, mode: str) -> str:
-    return f"MODE = {mode}\n\nForm fields:\n{current.model_dump_json()}"
+def build_testdata_message(current: FormSpec, mode: str, count: int = 1) -> str:
+    return f"MODE = {mode}\nCOUNT = {count}\n\nForm fields:\n{current.model_dump_json()}"
