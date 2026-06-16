@@ -11,19 +11,48 @@ Mounting rules:
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-
-import logging
 
 from .llm import active_brain
 from .registry import Agent
 from .transcripts import get_store
 
 log = logging.getLogger("luke_agents.server")
+
+
+def _cors_kwargs(raw: str) -> dict:
+    """Translate the AGENTS_CORS env into CORSMiddleware kwargs.
+
+    Starlette's `allow_origins` is EXACT-match only — an entry like
+    `https://*.lukeflow.com` would never match `https://consdev.lukeflow.com` and
+    every preflight from that origin 400s. So we split entries: exact origins go
+    to `allow_origins`, and any with a `*` become an `allow_origin_regex` (which
+    Starlette matches with fullmatch). `*` alone means allow everything.
+    """
+    raw = raw.strip()
+    if raw == "*":
+        return {"allow_origins": ["*"]}
+    entries = [o.strip() for o in raw.split(",") if o.strip()]
+    exact = [o for o in entries if "*" not in o]
+    wild = [o for o in entries if "*" in o]
+    kwargs: dict = {}
+    if exact:
+        kwargs["allow_origins"] = exact
+    if wild:
+        # Escape each pattern, then turn the wildcard into a DNS-label matcher
+        # (e.g. https://*.lukeflow.com -> https://[A-Za-z0-9-]+\.lukeflow\.com).
+        kwargs["allow_origin_regex"] = "|".join(
+            re.escape(p).replace(r"\*", r"[A-Za-z0-9-]+") for p in wild
+        )
+    if not kwargs:  # misconfigured (e.g. empty) — fail closed to same-origin only
+        kwargs["allow_origins"] = []
+    return kwargs
 
 
 def _mount_static(app: FastAPI, agent: Agent, prefix: str) -> None:
@@ -51,13 +80,14 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
     app = FastAPI(title=title, version="0.1.0")
 
     # Allow browser clients (e.g. the consumer-ui Form Builder) to call us. Set
-    # AGENTS_CORS to a comma-separated origin list in prod to lock it down.
+    # AGENTS_CORS to a comma-separated origin list in prod to lock it down;
+    # entries may use a `*` subdomain wildcard (e.g. https://*.lukeflow.com).
     origins = os.getenv("AGENTS_CORS", os.getenv("FORM_AGENT_CORS", "*"))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if origins.strip() == "*" else [o.strip() for o in origins.split(",")],
         allow_methods=["*"],
         allow_headers=["*"],
+        **_cors_kwargs(origins),
     )
 
     @app.on_event("startup")
