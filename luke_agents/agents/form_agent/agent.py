@@ -15,8 +15,17 @@ from ...core import llm
 from ...core.ratelimit import enforce
 from ...core.transcripts import Feedback, TurnRecord, safe_record_feedback, safe_record_turn
 from .coltorapps import schema_to_spec, spec_to_schema
-from .prompt import SYSTEM, build_user_message
-from .schema import AssistantTurn, ChatRequest, ChatResponse, FeedbackRequest
+from .ops import apply_operations
+from .prompt import SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
+from .schema import (
+    AssistantTurn,
+    ChatRequest,
+    ChatResponse,
+    FeedbackRequest,
+    TestDataRequest,
+    TestDataResponse,
+    TestDataTurn,
+)
 
 _STATIC = Path(__file__).parent / "static" / "index.html"
 
@@ -91,22 +100,41 @@ class FormAgent(Agent):
                     ) from exc
                 raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
 
-            out_schema = spec_to_schema(turn, existing, preserved_entities, preserved_root_ids)
+            # Apply ONLY the operations the model emitted onto the current form —
+            # fields it didn't mention are carried through untouched.
+            new_spec = apply_operations(spec, turn.operations)
+            out_schema = spec_to_schema(new_spec, existing, preserved_entities, preserved_root_ids)
             # Structural compare: equal dicts (any attr order) with equal root order
             # means the form is untouched (a question / chit-chat) — UI can skip re-applying.
             current_schema = req.schema or {"entities": {}, "root": []}
-            changed = out_schema != current_schema
+            changed = bool(turn.operations) and out_schema != current_schema
             # Persist off the response path so it adds no latency to the user's turn.
             background.add_task(_record, turn.model_dump(), changed, None)
             return ChatResponse(
                 schema=out_schema,
-                title=turn.title,
+                title=new_spec.title,
                 reply=turn.reply,
                 suggestions=turn.suggestions,
                 changed=changed,
                 brain=llm.active_brain(),
                 turn_id=turn_id,
             )
+
+        @router.post("/testdata", response_model=TestDataResponse)
+        def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
+            """Generate valid (should pass) or invalid (should be rejected) test data
+            for the current form, to drive the builder's Test runs."""
+            enforce(_rate_key(ChatRequest(message="", user_id=req.user_id), request))
+            spec, *_ = schema_to_spec(req.schema)
+            if req.title:
+                spec.title = req.title
+            try:
+                turn = llm.generate(
+                    TESTDATA_SYSTEM, build_testdata_message(spec, req.mode), TestDataTurn, temperature=0.5
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+            return TestDataResponse(values=turn.values, notes=turn.notes, brain=llm.active_brain())
 
         @router.post("/feedback")
         def feedback(req: FeedbackRequest) -> dict:

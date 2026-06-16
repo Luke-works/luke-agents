@@ -88,6 +88,8 @@ def schema_to_spec(schema: dict | None) -> tuple[FormSpec, dict, dict, list]:
                     required=bool(attrs.get("required", False)),
                     options=list(opts) if isinstance(opts, list) else None,
                     placeholder=attrs.get("placeholder"),
+                    tooltip=attrs.get("tooltip"),
+                    description=attrs.get("description"),
                 )
             )
             existing[key] = {"id": eid, "type": etype, "attributes": dict(attrs)}

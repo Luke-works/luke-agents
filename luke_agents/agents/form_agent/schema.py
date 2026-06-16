@@ -56,9 +56,35 @@ class FormSpec(BaseModel):
     fields: List[SpecField] = PydField(default_factory=list)
 
 
-class AssistantTurn(FormSpec):
-    """What the LLM returns each turn: the complete form PLUS a conversational
-    reply and a few suggested next steps the user can act on."""
+class FormOp(BaseModel):
+    """A single targeted change. The LLM emits ONE op per thing the user asked to
+    change — fields it doesn't mention get no op and are left byte-for-byte intact.
+    """
+    op: Literal["add", "update", "remove", "reorder", "retitle"]
+    field: Optional[SpecField] = PydField(
+        default=None,
+        description="For 'add'/'update': the COMPLETE field after the change. For "
+        "'update', keep the SAME `key` as the existing field unless deliberately renaming.",
+    )
+    after: Optional[str] = PydField(
+        default=None, description="For 'add': insert right after this field key (null = append at end)."
+    )
+    key: Optional[str] = PydField(default=None, description="For 'remove': the field key to delete.")
+    order: Optional[List[str]] = PydField(
+        default=None, description="For 'reorder': the full list of field keys in the desired order."
+    )
+    title: Optional[str] = PydField(default=None, description="For 'retitle': the new form title.")
+
+
+class AssistantTurn(BaseModel):
+    """What the LLM returns each turn: a list of targeted operations (EMPTY for a
+    question / chit-chat — nothing changes), a conversational reply, and a few
+    suggested next steps."""
+    operations: List[FormOp] = PydField(
+        default_factory=list,
+        description="Targeted changes to apply, in order. EMPTY when the message is a "
+        "question or general chat (the form must be left untouched).",
+    )
     reply: str = PydField(
         default="",
         description="Friendly, first-person natural-language reply describing what you did "
@@ -68,6 +94,19 @@ class AssistantTurn(FormSpec):
         default_factory=list,
         description="2-4 short, actionable next-step ideas as imperatives, e.g. "
         "'Add a phone number'. Each under ~6 words.",
+    )
+
+
+class TestDataTurn(BaseModel):
+    """What the LLM returns when asked to generate test data for a form."""
+    values: dict = PydField(
+        default_factory=dict,
+        description="Map of field key -> a value to enter. For choice fields, use one of "
+        "the field's options (a list for multi-select). For 'invalid' mode, values "
+        "should deliberately violate the field's rules.",
+    )
+    notes: str = PydField(
+        default="", description="One short line on the data (e.g. which rules the invalid values break)."
     )
 
 
@@ -101,3 +140,17 @@ class FeedbackRequest(BaseModel):
     accepted: Optional[bool] = None  # user kept (True) or undid (False) the edit
     rating: Optional[int] = None  # +1 / -1 thumbs
     note: Optional[str] = None
+
+
+class TestDataRequest(BaseModel):
+    """Ask LukeTalks to generate test data to drive the builder's Test runs."""
+    schema: Optional[dict] = None  # current coltorapps schema to generate values for
+    mode: Literal["valid", "invalid"] = "valid"  # valid → should pass; invalid → should be rejected
+    title: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class TestDataResponse(BaseModel):
+    values: dict  # {field_key: value} to fill into the form
+    notes: str = ""
+    brain: str
