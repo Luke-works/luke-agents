@@ -17,7 +17,7 @@ from fastapi import APIRouter
 @dataclass(frozen=True)
 class AgentMeta:
     slug: str  # url-safe segment, e.g. "form" -> mounted at /agents/form
-    name: str  # human label, e.g. "LukeTalks Form Builder"
+    name: str  # human label, e.g. "LukeBuilds Form Builder"
     description: str  # one line shown on the landing page / health
     version: str = "0.1.0"
 

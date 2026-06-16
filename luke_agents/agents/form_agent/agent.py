@@ -46,7 +46,7 @@ def _rate_key(req: ChatRequest, request: Request) -> str:
 class FormAgent(Agent):
     meta = AgentMeta(
         slug="form",
-        name="LukeTalks Form Builder",
+        name="LukeBuilds Form Builder",
         description="Describe a form in plain language; get a live coltorapps form schema back.",
         version="0.2.0",
     )
@@ -95,7 +95,7 @@ class FormAgent(Agent):
                     # Shared free/cheap quota is momentarily exhausted — degrade nicely.
                     raise HTTPException(
                         status_code=429,
-                        detail="LukeTalks is getting a lot of requests right now. "
+                        detail="LukeBuilds is getting a lot of requests right now. "
                         "Please wait a few seconds and try again.",
                     ) from exc
                 raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc

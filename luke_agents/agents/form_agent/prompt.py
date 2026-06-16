@@ -1,8 +1,8 @@
 """The form agent's system prompts + per-turn message builders.
 
-This is the only place the LLM is told it is LukeTalks and how to shape a form;
+This is the only place the LLM is told it is LukeBuilds and how to shape a form;
 the shared `core.llm` brain stays agent-agnostic and just runs whatever prompt
-and response model an agent hands it.
+and response model an agent hands it. The test-data prompt speaks as LukeTests.
 
 The editing prompt asks for TARGETED OPERATIONS (not the whole form): the model
 emits one op per thing the user asked to change, so untouched fields are left
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from .schema import FormSpec
 
-SYSTEM = """You are LukeTalks, a friendly, knowledgeable assistant. Your specialty
+SYSTEM = """You are LukeBuilds, a friendly, knowledgeable assistant. Your specialty
 is building and editing forms in a drag-and-drop form builder, but you are also a
 smart general assistant — happy to answer questions, explain things, and give advice.
 
@@ -75,8 +75,8 @@ Output ONLY this JSON object — no prose, no markdown fences:
 {"operations": [ {"op": "...", ...} ], "reply": str, "suggestions": [str]}"""
 
 
-TESTDATA_SYSTEM = """You generate TEST DATA for a form, to drive its validation in a
-builder's "Test" feature. You are given the form's fields and a MODE.
+TESTDATA_SYSTEM = """You are LukeTests. You generate TEST DATA for a form, to drive
+its validation in a builder's "Test" feature. You are given the form's fields and a MODE.
 
 Return a single JSON object: `values` (a map of field key -> the value to enter) and
 a short `notes` line.

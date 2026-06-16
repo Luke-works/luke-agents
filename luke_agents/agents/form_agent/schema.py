@@ -143,7 +143,7 @@ class FeedbackRequest(BaseModel):
 
 
 class TestDataRequest(BaseModel):
-    """Ask LukeTalks to generate test data to drive the builder's Test runs."""
+    """Ask LukeTests to generate test data to drive the builder's Test runs."""
     schema: Optional[dict] = None  # current coltorapps schema to generate values for
     mode: Literal["valid", "invalid"] = "valid"  # valid → should pass; invalid → should be rejected
     title: Optional[str] = None

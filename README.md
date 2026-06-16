@@ -5,9 +5,10 @@ A small platform for hosting many LLM agents behind **one** FastAPI app and one
 layer handles the parts every agent needs — LLM brain selection, per-caller rate
 limiting, and the server that mounts agents under `/agents/<slug>`.
 
-The first agent is **`form_agent`** (LukeTalks): chat-to-build-forms, emitting
+The first agent is **`form_agent`**: chat-to-build-forms (**LukeBuilds**), emitting
 the coltorapps builder schema that luke-consumer-ui / luke-capability-engine
-consume. It was extracted from the standalone `luke-form-agent` service.
+consume, plus test-data generation (**LukeTests**) for the builder's Test feature.
+It was extracted from the standalone `luke-form-agent` service.
 
 ## Layout
 
@@ -23,7 +24,7 @@ luke-agents/
     agents/
       form_agent/                  # one agent = one package
         agent.py                   #   FormAgent: the /chat route, wired to core
-        prompt.py                  #   LukeTalks system prompt + per-turn message
+        prompt.py                  #   LukeBuilds + LukeTests system prompts + builders
         schema.py                  #   FormSpec / AssistantTurn / Chat request+response
         coltorapps.py              #   FormSpec <-> coltorapps builder schema
         static/index.html          #   browser test client
