@@ -17,7 +17,7 @@ luke-agents/
   main.py                          # uvicorn entrypoint: registers agents -> build_app(...)
   luke_agents/
     core/                          # agent-agnostic plumbing
-      llm.py                       #   brain selection (Groq | Gemini | Ollama) + typed generate()
+      llm.py                       #   brain selection (Groq | OpenAI gpt-5-nano | Gemini | Ollama) + typed generate()
       ratelimit.py                 #   per-caller sliding-window limiter (+ enforce() -> HTTP 429)
       registry.py                  #   the Agent contract (AgentMeta + Agent base class)
       server.py                    #   build_app(): CORS, /health, mounting, root landing
