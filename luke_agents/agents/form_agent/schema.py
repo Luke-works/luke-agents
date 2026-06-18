@@ -8,9 +8,21 @@ Field types are the coltorapps palette names so the mapping is loss-free.
 """
 from __future__ import annotations
 
+import json
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field as PydField
+from pydantic import BaseModel, Field as PydField, field_validator
+
+# Bound request size so a single call can't amplify cost or exhaust memory
+# (these endpoints are unauthenticated and publicly reachable).
+_MAX_MESSAGE_CHARS = 16_000
+_MAX_SCHEMA_BYTES = 200_000
+
+
+def _validate_schema_size(v: Optional[dict]) -> Optional[dict]:
+    if v is not None and len(json.dumps(v, default=str)) > _MAX_SCHEMA_BYTES:
+        raise ValueError("schema is too large")
+    return v
 
 # coltorapps palette types we support generating. Choice types (select/radio/
 # selectBoxes) require an `options` list.
@@ -122,14 +134,19 @@ class TestDataTurn(BaseModel):
 class ChatRequest(BaseModel):
     """One turn. Stateless: the client (the Form Builder) sends the current
     coltorapps schema back each time, so the agent needs no storage."""
-    message: str
+    message: str = PydField(max_length=_MAX_MESSAGE_CHARS)
     # Current coltorapps schema: {"entities": {...}, "root": [...]}. Optional /
     # empty for a brand-new form.
     schema: Optional[dict] = None
-    title: Optional[str] = None  # current form name, if the client tracks one
-    user_id: Optional[str] = None  # for per-user rate limiting (falls back to IP)
-    session_id: Optional[str] = None  # stable id grouping turns of one conversation
+    title: Optional[str] = PydField(default=None, max_length=500)
+    user_id: Optional[str] = PydField(default=None, max_length=200)  # advisory only; budget is keyed by IP
+    session_id: Optional[str] = PydField(default=None, max_length=200)  # stable id grouping turns of one conversation
     consent: bool = True  # may this turn be retained for model fine-tuning?
+
+    @field_validator("schema")
+    @classmethod
+    def _cap_schema(cls, v: Optional[dict]) -> Optional[dict]:
+        return _validate_schema_size(v)
 
 
 class ChatResponse(BaseModel):
@@ -145,19 +162,24 @@ class ChatResponse(BaseModel):
 class FeedbackRequest(BaseModel):
     """Attach a quality label to a recorded turn (by its turn_id), so the
     exporter can keep good examples and drop bad ones."""
-    turn_id: str
+    turn_id: str = PydField(max_length=64)
     accepted: Optional[bool] = None  # user kept (True) or undid (False) the edit
-    rating: Optional[int] = None  # +1 / -1 thumbs
-    note: Optional[str] = None
+    rating: Optional[int] = PydField(default=None, ge=-1, le=1)  # +1 / -1 thumbs (bounded)
+    note: Optional[str] = PydField(default=None, max_length=2000)
 
 
 class TestDataRequest(BaseModel):
     """Ask LukeTests to generate test data to drive the builder's Test runs."""
     schema: Optional[dict] = None  # current coltorapps schema to generate values for
     mode: Literal["valid", "invalid"] = "valid"  # valid → should pass; invalid → should be rejected
-    count: int = 1  # how many distinct datasets to generate (clamped server-side)
-    title: Optional[str] = None
-    user_id: Optional[str] = None
+    count: int = PydField(default=1, ge=1, le=5)  # distinct datasets (also clamped server-side)
+    title: Optional[str] = PydField(default=None, max_length=500)
+    user_id: Optional[str] = PydField(default=None, max_length=200)
+
+    @field_validator("schema")
+    @classmethod
+    def _cap_schema(cls, v: Optional[dict]) -> Optional[dict]:
+        return _validate_schema_size(v)
 
 
 class TestDataResponse(BaseModel):
