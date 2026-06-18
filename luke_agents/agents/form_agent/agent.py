@@ -4,6 +4,8 @@ old top-level main.py now lives here, behind the `Agent` contract.
 """
 from __future__ import annotations
 
+import hmac
+import os
 import time
 import uuid
 from pathlib import Path
@@ -31,17 +33,29 @@ from .schema import (
 _STATIC = Path(__file__).parent / "static" / "index.html"
 
 
-def _rate_key(req: ChatRequest, request: Request) -> str:
-    """Identify the caller for rate limiting: the signed-in user id when the
-    client sends it, otherwise the originating IP (Render sets X-Forwarded-For).
-    Namespaced by agent slug so each agent has its own per-caller budget."""
-    if req.user_id:
-        who = f"user:{req.user_id}"
-    else:
-        fwd = request.headers.get("x-forwarded-for", "")
-        ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-        who = f"ip:{ip}"
-    return f"form:{who}"
+def _rate_key(request: Request) -> str:
+    """Budget key bound to the originating IP (Render sets X-Forwarded-For).
+
+    Deliberately NOT the client-supplied ``user_id``: that field is unauthenticated
+    and a caller could rotate it per request to mint a fresh budget and drive
+    unbounded AI spend. The IP is the only identifier the client can't trivially
+    change here. Namespaced by agent slug so each agent has its own budget."""
+    fwd = request.headers.get("x-forwarded-for", "")
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
+    return f"form:ip:{ip}"
+
+
+def _require_api_key(request: Request) -> None:
+    """Optional shared-key gate. When ``AGENTS_API_KEY`` is configured, every paid
+    or mutating call must present a matching ``X-Agents-Key`` header; otherwise it
+    is a no-op (preserving the current browser-direct flow). Enabling it fully
+    closes the unauthenticated-endpoint exposure once callers route server-side."""
+    expected = os.getenv("AGENTS_API_KEY", "").strip()
+    if not expected:
+        return
+    provided = request.headers.get("x-agents-key", "")
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Valid API key required")
 
 
 class FormAgent(Agent):
@@ -60,8 +74,9 @@ class FormAgent(Agent):
 
         @router.post("/chat", response_model=ChatResponse)
         def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
-            # Per-user rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(req, request))
+            _require_api_key(request)
+            # Per-IP rate limit FIRST, before any (paid) LLM call.
+            enforce(_rate_key(request))
 
             # Project the incoming coltorapps schema to a flat spec, keeping the
             # bits we must not lose so the rebuild can merge instead of clobber.
@@ -125,7 +140,8 @@ class FormAgent(Agent):
         def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
             """Generate valid (should pass) or invalid (should be rejected) test data
             for the current form, to drive the builder's Test runs."""
-            enforce(_rate_key(ChatRequest(message="", user_id=req.user_id), request))
+            _require_api_key(request)
+            enforce(_rate_key(request))
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title
@@ -140,9 +156,11 @@ class FormAgent(Agent):
             return TestDataResponse(datasets=datasets, brain=llm.active_brain())
 
         @router.post("/feedback")
-        def feedback(req: FeedbackRequest) -> dict:
+        def feedback(req: FeedbackRequest, request: Request) -> dict:
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
             only good training examples. Safe no-op if transcripts are disabled."""
+            _require_api_key(request)
+            enforce(_rate_key(request))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)
             )
