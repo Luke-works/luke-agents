@@ -38,6 +38,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
+# Hard per-call timeout (seconds) applied to every provider client. Without it a
+# hung upstream call blocks the worker indefinitely — a DoS on the single-worker
+# Render setup. On timeout the SDK raises, the agent maps it to a 502, and the
+# worker is freed.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+
 
 def active_brain() -> str:
     """Which backend is live. AGENTS_BRAIN forces one (e.g. 'openai'); otherwise
@@ -87,7 +93,7 @@ def generate(system: str, user: str, response_model: type[T], *, temperature: fl
 def _groq(system: str, user: str, response_model: type[T], temperature: float) -> T:
     from groq import Groq
 
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=GROQ_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
     # The exact output shape lives in the agent's system prompt, so no verbose
     # JSON-schema dump here — keeps input tokens (and cost) down.
     messages = [
@@ -124,7 +130,7 @@ def _openai(system: str, user: str, response_model: type[T]) -> T:
     """
     from openai import OpenAI
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
     kwargs: dict = {
         "model": OPENAI_MODEL,
         "messages": [
@@ -156,7 +162,10 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float)
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),  # ms
+    )
     resp = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=user,
@@ -173,7 +182,7 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float)
 def _ollama(system: str, user: str, response_model: type[T], temperature: float) -> T:
     import ollama
 
-    resp = ollama.chat(
+    resp = ollama.Client(timeout=LLM_TIMEOUT_SECONDS).chat(
         model=OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": system},
