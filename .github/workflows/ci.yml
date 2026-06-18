@@ -24,11 +24,13 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
 
       - name: Syntax check (compile everything)
         run: python -m compileall luke_agents main.py
 
-      - name: Import check (the app loads cleanly)
-        # Importing the app catches missing modules / broken wiring before deploy.
-        run: python -c "import main"
+      - name: Run tests
+        # pytest also imports the app modules, so broken wiring fails here too.
+        run: pytest -q
