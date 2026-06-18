@@ -1,0 +1,34 @@
+# CI — the "robot" that checks every change before it counts.
+# Runs automatically on every Pull Request and every push to develop.
+# Green check = safe to merge. Red X = something's broken (it tells you what).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+  workflow_dispatch: {}
+
+jobs:
+  build-and-test:
+    name: Build & import check (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check (compile everything)
+        run: python -m compileall luke_agents main.py
+
+      - name: Import check (the app loads cleanly)
+        # Importing the app catches missing modules / broken wiring before deploy.
+        run: python -c "import main"
