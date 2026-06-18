@@ -4,10 +4,11 @@
 - feedback rating is bounded
 """
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from luke_agents.core import ratelimit
-from luke_agents.agents.form_agent.agent import _rate_key
+from luke_agents.agents.form_agent.agent import _rate_key, _require_api_key
 from luke_agents.agents.form_agent.schema import (
     ChatRequest,
     FeedbackRequest,
@@ -68,3 +69,21 @@ def test_testdata_count_is_bounded():
     assert TestDataRequest().count == 1
     with pytest.raises(ValidationError):
         TestDataRequest(count=99)
+
+
+def test_api_key_gate_is_noop_when_unset(monkeypatch):
+    monkeypatch.delenv("AGENTS_API_KEY", raising=False)
+    _require_api_key(_Req())  # must not raise
+
+
+def test_api_key_gate_rejects_missing_or_wrong_key(monkeypatch):
+    monkeypatch.setenv("AGENTS_API_KEY", "s3cret")
+    with pytest.raises(HTTPException):
+        _require_api_key(_Req(headers={}))            # no key
+    with pytest.raises(HTTPException):
+        _require_api_key(_Req(headers={"x-agents-key": "wrong"}))
+
+
+def test_api_key_gate_accepts_correct_key(monkeypatch):
+    monkeypatch.setenv("AGENTS_API_KEY", "s3cret")
+    _require_api_key(_Req(headers={"x-agents-key": "s3cret"}))  # must not raise
