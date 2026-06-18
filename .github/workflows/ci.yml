@@ -32,5 +32,6 @@ jobs:
         run: python -m compileall luke_agents main.py
 
       - name: Run tests
-        # pytest also imports the app modules, so broken wiring fails here too.
-        run: pytest -q
+        # 'python -m pytest' puts the repo root on sys.path so `import luke_agents`
+        # resolves. pytest also imports the app modules, so broken wiring fails here.
+        run: python -m pytest -q
