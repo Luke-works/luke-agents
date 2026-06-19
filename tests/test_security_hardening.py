@@ -29,12 +29,12 @@ class _Req:
 
 
 def test_rate_key_is_ip_based():
-    assert _rate_key(_Req(host="9.9.9.9")) == "form:ip:9.9.9.9"
+    assert _rate_key(_Req(host="9.9.9.9"), "acme") == "form:t:acme:ip:9.9.9.9"
 
 
 def test_rate_key_prefers_forwarded_for():
     r = _Req(headers={"x-forwarded-for": "203.0.113.5, 10.0.0.1"}, host="10.0.0.1")
-    assert _rate_key(r) == "form:ip:203.0.113.5"
+    assert _rate_key(r, "acme") == "form:t:acme:ip:203.0.113.5"
 
 
 def test_rate_limit_allows_then_blocks(monkeypatch):

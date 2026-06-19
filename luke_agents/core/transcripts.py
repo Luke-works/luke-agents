@@ -51,6 +51,7 @@ class TurnRecord:
     messages: list  # exact input: [{"role":"system",...}, {"role":"user",...}]
     output: Optional[dict]  # exact model output (the validated AssistantTurn dict)
     input_schema: Optional[dict] = None  # incoming coltorapps schema, for context
+    tenant_id: Optional[str] = None  # owning tenant (#33) — set from the verified principal
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     changed: Optional[bool] = None  # auto quality signal: did the form change?
@@ -87,6 +88,9 @@ class TranscriptStore:
     def record_feedback(self, turn_id: str, fb: Feedback) -> bool:  # found?
         return False
 
+    def delete_tenant(self, tenant_id: str) -> int:  # rows erased (#33)
+        return 0
+
 
 class NullStore(TranscriptStore):
     """Disabled: records nothing."""
@@ -121,6 +125,30 @@ class JsonlStore(TranscriptStore):
         self._append(self.feedback, {"turn_id": turn_id, "at": _now_iso(), **asdict(fb)})
         return True  # append-only can't confirm the turn exists; assume ok
 
+    def delete_tenant(self, tenant_id: str) -> int:
+        """Erase one tenant's turns (and their feedback) — rewrite both files,
+        dropping matching rows. (#33; ties into retention.)"""
+        with self._lock:
+            if not self.turns.exists():
+                return 0
+            kept_turns, removed_ids = [], set()
+            for line in self.turns.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("tenant_id") == tenant_id:
+                    removed_ids.add(row.get("id"))
+                else:
+                    kept_turns.append(line)
+            self.turns.write_text("\n".join(kept_turns) + ("\n" if kept_turns else ""), encoding="utf-8")
+            if self.feedback.exists() and removed_ids:
+                kept_fb = [
+                    ln for ln in self.feedback.read_text(encoding="utf-8").splitlines()
+                    if ln.strip() and json.loads(ln).get("turn_id") not in removed_ids
+                ]
+                self.feedback.write_text("\n".join(kept_fb) + ("\n" if kept_fb else ""), encoding="utf-8")
+            return len(removed_ids)
+
 
 class PostgresStore(TranscriptStore):
     """Durable store. One table `<schema>.turns`; feedback updates the row in place."""
@@ -154,6 +182,7 @@ class PostgresStore(TranscriptStore):
                 agent         text NOT NULL,
                 brain         text,
                 model         text,
+                tenant_id     text,
                 user_id       text,
                 session_id    text,
                 prompt_hash   text,
@@ -171,6 +200,11 @@ class PostgresStore(TranscriptStore):
             );
             CREATE INDEX IF NOT EXISTS turns_agent_created_idx
                 ON {self.schema}.turns (agent, created_at);
+            -- #33: migrate pre-existing tables, then index by tenant for scoped
+            -- reads/exports and per-tenant erasure.
+            ALTER TABLE {self.schema}.turns ADD COLUMN IF NOT EXISTS tenant_id text;
+            CREATE INDEX IF NOT EXISTS turns_tenant_idx
+                ON {self.schema}.turns (tenant_id, agent, created_at);
             """
             self._run(lambda cur: cur.execute(ddl))
             self._ready = True
@@ -194,13 +228,13 @@ class PostgresStore(TranscriptStore):
             self.init()
         sql = f"""
             INSERT INTO {self.schema}.turns
-              (id, agent, brain, model, user_id, session_id, prompt_hash,
+              (id, agent, brain, model, tenant_id, user_id, session_id, prompt_hash,
                messages, output, input_schema, changed, latency_ms, error, consent)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id) DO NOTHING
         """
         params = (
-            rec.id, rec.agent, rec.brain, rec.model, rec.user_id, rec.session_id,
+            rec.id, rec.agent, rec.brain, rec.model, rec.tenant_id, rec.user_id, rec.session_id,
             rec.prompt_hash, Json(rec.messages), Json(rec.output),
             Json(rec.input_schema), rec.changed, rec.latency_ms, rec.error, rec.consent,
         )
@@ -223,6 +257,17 @@ class PostgresStore(TranscriptStore):
             return cur.rowcount
 
         return bool(self._run(run))
+
+    def delete_tenant(self, tenant_id: str) -> int:
+        if not self._ready:
+            self.init()
+        sql = f"DELETE FROM {self.schema}.turns WHERE tenant_id = %s"
+
+        def run(cur):
+            cur.execute(sql, (tenant_id,))
+            return cur.rowcount
+
+        return int(self._run(run))
 
 
 # --------------------------------------------------------------------------- #
@@ -265,3 +310,12 @@ def safe_record_feedback(turn_id: str, fb: Feedback) -> bool:
     except Exception:  # noqa: BLE001
         log.exception("transcripts: failed to record feedback for %s", turn_id)
         return False
+
+
+def delete_tenant(tenant_id: str) -> int:
+    """Erase every recorded turn for a tenant (GDPR / off-boarding, #33). Raises on
+    failure — unlike the record paths, an erasure that silently failed would be a
+    compliance hazard, so the caller (an ops tool) should see the error."""
+    if not tenant_id or not tenant_id.strip():
+        raise ValueError("tenant_id is required for erasure")
+    return get_store().delete_tenant(tenant_id.strip())

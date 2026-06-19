@@ -15,6 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.ratelimit import enforce
+from ...core.tenancy import resolve_tenant
 from ...core.transcripts import Feedback, TurnRecord, safe_record_feedback, safe_record_turn
 from .coltorapps import schema_to_spec, spec_to_schema
 from .ops import apply_operations
@@ -33,16 +34,17 @@ from .schema import (
 _STATIC = Path(__file__).parent / "static" / "index.html"
 
 
-def _rate_key(request: Request) -> str:
-    """Budget key bound to the originating IP (Render sets X-Forwarded-For).
+def _rate_key(request: Request, tenant: str) -> str:
+    """Budget key bound to the tenant + originating IP (Render sets X-Forwarded-For).
 
-    Deliberately NOT the client-supplied ``user_id``: that field is unauthenticated
-    and a caller could rotate it per request to mint a fresh budget and drive
-    unbounded AI spend. The IP is the only identifier the client can't trivially
-    change here. Namespaced by agent slug so each agent has its own budget."""
+    Namespaced by tenant (#33) so each org has its own budget, then by IP within the
+    tenant. Deliberately NOT the client-supplied ``user_id``: that field is
+    unauthenticated and a caller could rotate it per request to mint a fresh budget
+    and drive unbounded AI spend. Namespaced by agent slug so each agent has its own
+    budget."""
     fwd = request.headers.get("x-forwarded-for", "")
     ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-    return f"form:ip:{ip}"
+    return f"form:t:{tenant}:ip:{ip}"
 
 
 def _require_api_key(request: Request) -> None:
@@ -75,8 +77,9 @@ class FormAgent(Agent):
         @router.post("/chat", response_model=ChatResponse)
         def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
             _require_api_key(request)
-            # Per-IP rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(request))
+            tenant = resolve_tenant(request)
+            # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
+            enforce(_rate_key(request, tenant))
 
             # Project the incoming coltorapps schema to a flat spec, keeping the
             # bits we must not lose so the rebuild can merge instead of clobber.
@@ -95,6 +98,7 @@ class FormAgent(Agent):
                     id=turn_id, agent=self.meta.slug,
                     brain=llm.active_brain(), model=llm.active_model(),
                     messages=messages, output=output, input_schema=req.schema,
+                    tenant_id=tenant,
                     user_id=req.user_id, session_id=req.session_id, changed=changed,
                     latency_ms=int((time.perf_counter() - t0) * 1000),
                     error=error, consent=req.consent,
@@ -141,7 +145,7 @@ class FormAgent(Agent):
             """Generate valid (should pass) or invalid (should be rejected) test data
             for the current form, to drive the builder's Test runs."""
             _require_api_key(request)
-            enforce(_rate_key(request))
+            enforce(_rate_key(request, resolve_tenant(request)))
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title
@@ -160,7 +164,7 @@ class FormAgent(Agent):
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
             only good training examples. Safe no-op if transcripts are disabled."""
             _require_api_key(request)
-            enforce(_rate_key(request))  # bound writes (was unauthenticated + unthrottled)
+            enforce(_rate_key(request, resolve_tenant(request)))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)
             )

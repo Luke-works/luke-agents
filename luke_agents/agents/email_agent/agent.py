@@ -17,6 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.ratelimit import enforce
+from ...core.tenancy import resolve_tenant
 from ...core.transcripts import TurnRecord, safe_record_turn
 from .ops import derive_reply, derive_suggestions, extract_variables, repair_doc
 from .prompt import SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
@@ -31,16 +32,17 @@ from .schema import (
 )
 
 
-def _rate_key(request: Request) -> str:
-    """Budget key bound to the originating IP (Render sets X-Forwarded-For).
+def _rate_key(request: Request, tenant: str) -> str:
+    """Budget key bound to the tenant + originating IP (Render sets X-Forwarded-For).
 
-    Deliberately NOT the client-supplied ``user_id``: that field is unauthenticated
-    and a caller could rotate it per request to mint a fresh budget and drive
-    unbounded AI spend. The IP is the only identifier the client can't trivially
-    change here. Namespaced by agent slug so each agent has its own budget."""
+    Namespaced by tenant (#33) so each org has its own budget, then by IP within the
+    tenant. Deliberately NOT the client-supplied ``user_id``: that field is
+    unauthenticated and a caller could rotate it per request to mint a fresh budget
+    and drive unbounded AI spend. Namespaced by agent slug so each agent has its own
+    budget."""
     fwd = request.headers.get("x-forwarded-for", "")
     ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-    return f"email:ip:{ip}"
+    return f"email:t:{tenant}:ip:{ip}"
 
 
 def _require_api_key(request: Request) -> None:
@@ -70,8 +72,9 @@ class EmailAgent(Agent):
         @router.post("/chat", response_model=ChatResponse)
         def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
             _require_api_key(request)
-            # Per-IP rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(request))
+            tenant = resolve_tenant(request)
+            # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
+            enforce(_rate_key(request, tenant))
 
             # The response_model IS the EmailDoc: json_object mode guarantees a
             # valid document, and we repair/clamp it before returning so the UI
@@ -87,6 +90,7 @@ class EmailAgent(Agent):
                     id=turn_id, agent=self.meta.slug,
                     brain=llm.active_brain(), model=llm.active_model(),
                     messages=messages, output=output, input_schema=req.doc,
+                    tenant_id=tenant,
                     user_id=req.user_id, session_id=req.session_id, changed=changed,
                     latency_ms=int((time.perf_counter() - t0) * 1000),
                     error=error, consent=req.consent,
@@ -134,7 +138,7 @@ class EmailAgent(Agent):
             """Generate plausible sample values for each {{var}} in the email, to
             drive the builder's live preview + test send."""
             _require_api_key(request)
-            enforce(_rate_key(request))
+            enforce(_rate_key(request, resolve_tenant(request)))
             try:
                 doc = EmailDoc.model_validate(req.doc) if req.doc else EmailDoc()
             except Exception as exc:  # noqa: BLE001 - malformed incoming doc

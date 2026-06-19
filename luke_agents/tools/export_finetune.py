@@ -62,19 +62,25 @@ def _to_example(row: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Readers — mirror the app's store selection
 # --------------------------------------------------------------------------- #
-def _read_postgres(dsn: str, schema: str, agent: Optional[str]) -> Iterable[dict]:
+def _read_postgres(dsn: str, schema: str, agent: Optional[str], tenant: Optional[str]) -> Iterable[dict]:
     import psycopg2
     import psycopg2.extras
 
-    where = "WHERE agent = %s" if agent else ""
-    params = (agent,) if agent else ()
+    clauses, params = [], []
+    if agent:
+        clauses.append("agent = %s")
+        params.append(agent)
+    if tenant:
+        clauses.append("tenant_id = %s")  # tenant scoping (#33)
+        params.append(tenant)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     conn = psycopg2.connect(dsn)
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 f"""SELECT messages, output, changed, accepted, rating, consent, error
                     FROM {schema}.turns {where} ORDER BY created_at""",
-                params,
+                tuple(params),
             )
             for row in cur:
                 yield dict(row)
@@ -82,7 +88,7 @@ def _read_postgres(dsn: str, schema: str, agent: Optional[str]) -> Iterable[dict
         conn.close()
 
 
-def _read_jsonl(directory: str, agent: Optional[str]) -> Iterable[dict]:
+def _read_jsonl(directory: str, agent: Optional[str], tenant: Optional[str]) -> Iterable[dict]:
     import pathlib
 
     d = pathlib.Path(directory)
@@ -106,31 +112,49 @@ def _read_jsonl(directory: str, agent: Optional[str]) -> Iterable[dict]:
         row = json.loads(line)
         if agent and row.get("agent") != agent:
             continue
+        if tenant and row.get("tenant_id") != tenant:  # tenant scoping (#33)
+            continue
         row.update(feedback.get(row.get("id"), {}))
         yield row
 
 
-def _rows(agent: Optional[str]) -> Iterable[dict]:
+def _rows(agent: Optional[str], tenant: Optional[str]) -> Iterable[dict]:
     dsn = os.getenv("DATABASE_URL")
     if dsn:
         schema = os.getenv("AGENTS_DB_SCHEMA", "luke_agents")
-        return _read_postgres(dsn, schema, agent)
-    return _read_jsonl(os.getenv("TRANSCRIPTS_DIR", "data/transcripts"), agent)
+        return _read_postgres(dsn, schema, agent, tenant)
+    return _read_jsonl(os.getenv("TRANSCRIPTS_DIR", "data/transcripts"), agent, tenant)
 
 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(description="Export recorded turns as fine-tuning JSONL.")
     p.add_argument("--agent", default=None, help="filter to one agent slug (e.g. 'form')")
+    p.add_argument("--tenant", default=None, help="scope to one tenant id (required unless --all-tenants)")
+    p.add_argument("--all-tenants", action="store_true",
+                   help="export across ALL tenants (explicit opt-out of tenant scoping)")
+    p.add_argument("--delete-tenant", default=None, metavar="TENANT",
+                   help="ERASE every recorded turn for this tenant and exit (GDPR / off-boarding)")
     p.add_argument("--out", default="-", help="output .jsonl path, or '-' for stdout")
     p.add_argument("--only-accepted", action="store_true", help="require an explicit kept(=accepted) label")
     p.add_argument("--include-unchanged", action="store_true", help="also export chat/no-op turns")
     p.add_argument("--min-rating", type=int, default=None, help="require rating >= N")
     args = p.parse_args(argv)
 
+    if args.delete_tenant:
+        from ..core.transcripts import delete_tenant
+        n = delete_tenant(args.delete_tenant)
+        print(f"erased {n} turns for tenant {args.delete_tenant!r}", file=sys.stderr)
+        return 0
+
+    # Cross-tenant reads are prevented by default (#33): require an explicit tenant
+    # scope, or an explicit --all-tenants opt-out.
+    if not args.tenant and not args.all_tenants:
+        p.error("specify --tenant <id> to scope the export, or --all-tenants to export across every tenant")
+
     out = sys.stdout if args.out == "-" else open(args.out, "w", encoding="utf-8")
     kept = total = 0
     try:
-        for row in _rows(args.agent):
+        for row in _rows(args.agent, args.tenant):
             total += 1
             if _keep(row, only_accepted=args.only_accepted,
                      include_unchanged=args.include_unchanged, min_rating=args.min_rating):
