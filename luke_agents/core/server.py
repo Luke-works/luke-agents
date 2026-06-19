@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from .llm import active_brain
+from .observability import CorrelationIdMiddleware, configure_logging
 from .registry import Agent
 from .transcripts import get_store
 
@@ -77,7 +78,11 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         raise ValueError("agent slugs must be unique")
     default = by_slug.get(default_slug) if default_slug else agents[0]
 
+    configure_logging()  # JSON logs tagged with the per-request correlation id (#21)
     app = FastAPI(title=title, version="0.1.0")
+
+    # Correlation id first (outermost): added AFTER CORS so it wraps it and every
+    # request thread has the id set before any handler/log runs.
 
     # Allow browser clients (e.g. the consumer-ui Form Builder) to call us. Set
     # AGENTS_CORS to a comma-separated origin list in prod to lock it down;
@@ -89,6 +94,7 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         allow_headers=["*"],
         **_cors_kwargs(origins),
     )
+    app.add_middleware(CorrelationIdMiddleware)  # outermost (added last)
 
     @app.on_event("startup")
     def _init_transcripts() -> None:
