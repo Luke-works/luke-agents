@@ -6,6 +6,7 @@ exposes the chosen default at the root too (drop-in for single-agent clients).
 """
 from dotenv import load_dotenv
 
+from luke_agents.agents.email_agent import EmailAgent
 from luke_agents.agents.form_agent import FormAgent
 from luke_agents.core import build_app
 
@@ -13,7 +14,8 @@ load_dotenv()
 
 AGENTS = [
     FormAgent(),
-    # Add more agents here, e.g. WorkflowAgent(), EmailAgent(), ...
+    EmailAgent(),
+    # Add more agents here, e.g. WorkflowAgent(), ...
 ]
 
 app = build_app(AGENTS, default_slug="form")
