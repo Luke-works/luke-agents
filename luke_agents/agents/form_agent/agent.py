@@ -4,8 +4,6 @@ old top-level main.py now lives here, behind the `Agent` contract.
 """
 from __future__ import annotations
 
-import hmac
-import os
 import time
 import uuid
 from pathlib import Path
@@ -47,19 +45,6 @@ def _rate_key(request: Request, tenant: str) -> str:
     return f"form:t:{tenant}:ip:{ip}"
 
 
-def _require_api_key(request: Request) -> None:
-    """Optional shared-key gate. When ``AGENTS_API_KEY`` is configured, every paid
-    or mutating call must present a matching ``X-Agents-Key`` header; otherwise it
-    is a no-op (preserving the current browser-direct flow). Enabling it fully
-    closes the unauthenticated-endpoint exposure once callers route server-side."""
-    expected = os.getenv("AGENTS_API_KEY", "").strip()
-    if not expected:
-        return
-    provided = request.headers.get("x-agents-key", "")
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="Valid API key required")
-
-
 class FormAgent(Agent):
     meta = AgentMeta(
         slug="form",
@@ -76,7 +61,7 @@ class FormAgent(Agent):
 
         @router.post("/chat", response_model=ChatResponse)
         def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
-            _require_api_key(request)
+            # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
@@ -144,7 +129,6 @@ class FormAgent(Agent):
         def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
             """Generate valid (should pass) or invalid (should be rejected) test data
             for the current form, to drive the builder's Test runs."""
-            _require_api_key(request)
             enforce(_rate_key(request, resolve_tenant(request)))
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
@@ -163,7 +147,6 @@ class FormAgent(Agent):
         def feedback(req: FeedbackRequest, request: Request) -> dict:
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
             only good training examples. Safe no-op if transcripts are disabled."""
-            _require_api_key(request)
             enforce(_rate_key(request, resolve_tenant(request)))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)

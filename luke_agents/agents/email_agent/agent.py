@@ -6,9 +6,7 @@ values for preview + test send. Mirrors `form_agent` behind the `Agent` contract
 """
 from __future__ import annotations
 
-import hmac
 import json
-import os
 import time
 import uuid
 
@@ -45,19 +43,6 @@ def _rate_key(request: Request, tenant: str) -> str:
     return f"email:t:{tenant}:ip:{ip}"
 
 
-def _require_api_key(request: Request) -> None:
-    """Optional shared-key gate. When ``AGENTS_API_KEY`` is configured, every paid
-    or mutating call must present a matching ``X-Agents-Key`` header; otherwise it
-    is a no-op (preserving the current browser-direct flow). Enabling it fully
-    closes the unauthenticated-endpoint exposure once callers route server-side."""
-    expected = os.getenv("AGENTS_API_KEY", "").strip()
-    if not expected:
-        return
-    provided = request.headers.get("x-agents-key", "")
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="Valid API key required")
-
-
 class EmailAgent(Agent):
     meta = AgentMeta(
         slug="email",
@@ -71,7 +56,7 @@ class EmailAgent(Agent):
 
         @router.post("/chat", response_model=ChatResponse)
         def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
-            _require_api_key(request)
+            # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
@@ -137,7 +122,6 @@ class EmailAgent(Agent):
         def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
             """Generate plausible sample values for each {{var}} in the email, to
             drive the builder's live preview + test send."""
-            _require_api_key(request)
             enforce(_rate_key(request, resolve_tenant(request)))
             try:
                 doc = EmailDoc.model_validate(req.doc) if req.doc else EmailDoc()

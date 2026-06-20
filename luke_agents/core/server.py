@@ -15,10 +15,11 @@ import logging
 import os
 import re
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
+from .auth import require_api_key
 from .llm import active_brain
 from .observability import CorrelationIdMiddleware, configure_logging
 from .registry import Agent
@@ -122,13 +123,20 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
             ],
         }
 
+    # The API-key gate is applied at the router level so it covers every agent
+    # route uniformly — including any added later (#32). /health and / are declared
+    # on the app above (outside any router) and stay open by design.
     for agent in agents:
         prefix = f"/agents/{agent.meta.slug}"
-        app.include_router(agent.build_router(), prefix=prefix)
+        app.include_router(
+            agent.build_router(), prefix=prefix, dependencies=[Depends(require_api_key)]
+        )
         _mount_static(app, agent, prefix)
 
     # Default agent also at root for drop-in single-agent compatibility.
-    app.include_router(default.build_router(), prefix="")
+    app.include_router(
+        default.build_router(), prefix="", dependencies=[Depends(require_api_key)]
+    )
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index() -> str:
