@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest fakeredis   # fakeredis backs the Redis rate-limiter test (#27)
 
       - name: Syntax check (compile everything)
         run: python -m compileall luke_agents main.py

@@ -53,7 +53,7 @@ def test_rate_key_is_namespaced_by_tenant():
 
 def test_budgets_are_independent_across_tenants(monkeypatch):
     monkeypatch.setattr(ratelimit, "RATE_LIMIT_MAX", 1)
-    ratelimit._hits.clear()
+    ratelimit.reset()  # fresh in-memory window for this test
     key_a = _rate_key(_Req(host="5.5.5.5"), "tenant-a")
     key_b = _rate_key(_Req(host="5.5.5.5"), "tenant-b")
     assert ratelimit.check_and_record(key_a)[0] is True

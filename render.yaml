@@ -34,6 +34,12 @@ services:
         value: "200"
       - key: RATE_LIMIT_WINDOW_SECONDS
         value: "10800"
+      # Shared rate-limit store (#27). REQUIRED for any multi-worker / multi-instance
+      # run: without it the window is per-worker and the effective cap is multiplied
+      # (and resets on every redeploy). Point at a Render Key Value (Redis) instance.
+      # Unset → in-memory fallback (single-worker dev only). sync:false = set in dashboard.
+      - key: REDIS_URL
+        sync: false
       # Transcript store: set DATABASE_URL (the shared luke Postgres) to persist
       # turns for fine-tuning. Tables are created in the AGENTS_DB_SCHEMA schema.
       # Leave DATABASE_URL unset to disable durable recording (dev = JSONL files).
