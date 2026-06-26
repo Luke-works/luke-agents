@@ -72,28 +72,45 @@ def active_model() -> str:
     }.get(active_brain(), "unknown")
 
 
-def generate(system: str, user: str, response_model: type[T], *, temperature: float = 0.3) -> T:
+def generate(
+    system: str,
+    user: str,
+    response_model: type[T],
+    *,
+    temperature: float = 0.3,
+    model: str | None = None,
+) -> T:
     """Run one turn against the active brain and return a validated `response_model`.
 
     `system` is the agent's instructions, `user` the per-turn payload. Every
     backend is asked for schema-shaped JSON and the result is validated with
     Pydantic before returning, so callers always get a well-formed object (or an
     exception they can map to an HTTP error).
+
+    `model` optionally overrides the active brain's default model for this one
+    call — e.g. a cheap/fast model for high-volume classification — without
+    changing the global config for other agents. Leave it None to use the brain's
+    configured default. Only meaningful for the brain that's actually active.
     """
     brain = active_brain()
     if brain == "groq":
-        return _groq(system, user, response_model, temperature)
+        return _groq(system, user, response_model, temperature, model)
     if brain == "openai":
-        return _openai(system, user, response_model)  # nano ignores temperature
+        return _openai(system, user, response_model, model)  # nano ignores temperature
     if brain == "gemini":
-        return _gemini(system, user, response_model, temperature)
-    return _ollama(system, user, response_model, temperature)
+        return _gemini(system, user, response_model, temperature, model)
+    return _ollama(system, user, response_model, temperature, model)
 
 
-def _groq(system: str, user: str, response_model: type[T], temperature: float) -> T:
+def _groq(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
     from groq import Groq
 
     client = Groq(api_key=GROQ_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
+    # Groq's json_object response_format returns a 400 unless the word "json" appears somewhere
+    # in the messages. Most prompts already describe a JSON output, but append a minimal
+    # instruction for any that don't (e.g. the test-data prompt) so the request is never rejected.
+    if "json" not in f"{system}\n{user}".lower():
+        system = f"{system}\n\nRespond with a single JSON object."
     # The exact output shape lives in the agent's system prompt, so no verbose
     # JSON-schema dump here — keeps input tokens (and cost) down.
     messages = [
@@ -102,8 +119,9 @@ def _groq(system: str, user: str, response_model: type[T], temperature: float) -
     ]
     # Try the primary model, then fall back to a known-good one on any error
     # (unavailable model id, rate limit, malformed JSON, …).
-    models = [GROQ_MODEL]
-    if GROQ_FALLBACK_MODEL and GROQ_FALLBACK_MODEL != GROQ_MODEL:
+    primary = model or GROQ_MODEL
+    models = [primary]
+    if GROQ_FALLBACK_MODEL and GROQ_FALLBACK_MODEL != primary:
         models.append(GROQ_FALLBACK_MODEL)
 
     last_err: Exception | None = None
@@ -121,7 +139,7 @@ def _groq(system: str, user: str, response_model: type[T], temperature: float) -
     raise last_err  # type: ignore[misc]
 
 
-def _openai(system: str, user: str, response_model: type[T]) -> T:
+def _openai(system: str, user: str, response_model: type[T], model: str | None = None) -> T:
     """OpenAI GPT-5 nano via Structured Outputs (returns a validated Pydantic model).
 
     GPT-5 nano is a reasoning model: it rejects `temperature`, so we don't send it.
@@ -132,7 +150,7 @@ def _openai(system: str, user: str, response_model: type[T]) -> T:
 
     client = OpenAI(api_key=OPENAI_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
     kwargs: dict = {
-        "model": OPENAI_MODEL,
+        "model": model or OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -158,7 +176,7 @@ def _openai(system: str, user: str, response_model: type[T]) -> T:
     return response_model.model_validate_json(msg.content or "{}")
 
 
-def _gemini(system: str, user: str, response_model: type[T], temperature: float) -> T:
+def _gemini(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
     from google import genai
     from google.genai import types
 
@@ -167,7 +185,7 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float)
         http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),  # ms
     )
     resp = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=model or GEMINI_MODEL,
         contents=user,
         config=types.GenerateContentConfig(
             system_instruction=system,
@@ -179,11 +197,11 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float)
     return response_model.model_validate_json(resp.text)
 
 
-def _ollama(system: str, user: str, response_model: type[T], temperature: float) -> T:
+def _ollama(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
     import ollama
 
     resp = ollama.Client(timeout=LLM_TIMEOUT_SECONDS).chat(
-        model=OLLAMA_MODEL,
+        model=model or OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},

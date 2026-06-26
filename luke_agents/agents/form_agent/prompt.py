@@ -93,7 +93,7 @@ Value shapes by type: text/email/phone/textarea -> string; number/currency -> nu
 checkbox -> true/false; datetime -> ISO string; select/radio -> one option string;
 selectBoxes -> array of option strings. Skip `button` fields.
 
-Output ONLY: {"datasets": [{"values": { "<field_key>": <value>, ... }, "notes": str}, ...]}"""
+Output ONLY this JSON object: {"datasets": [{"values": { "<field_key>": <value>, ... }, "notes": str}, ...]}"""
 
 
 def build_user_message(current: FormSpec, message: str) -> str:
