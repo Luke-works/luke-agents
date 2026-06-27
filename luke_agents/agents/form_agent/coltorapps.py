@@ -51,6 +51,24 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+_LOGIC_ACTIONS = {"show", "hide", "enable", "disable", "require", "optional", "setValue"}
+
+
+def _safe_logic(raw: object) -> list | None:
+    """Read existing logic rules leniently — keep only well-formed {when, action[, value]} so a
+    hand-edited schema can't break the projection (and the LLM still sees the valid rules)."""
+    if not isinstance(raw, list):
+        return None
+    out: list = []
+    for r in raw:
+        if isinstance(r, dict) and r.get("action") in _LOGIC_ACTIONS:
+            rule = {"when": str(r.get("when") or ""), "action": r["action"]}
+            if r.get("value") is not None:
+                rule["value"] = str(r["value"])
+            out.append(rule)
+    return out or None
+
+
 def schema_to_spec(schema: dict | None) -> tuple[FormSpec, dict, dict, list]:
     """Project a coltorapps schema down to a flat FormSpec the LLM can edit, plus
     the bookkeeping needed to rebuild without losing anything:
@@ -90,6 +108,10 @@ def schema_to_spec(schema: dict | None) -> tuple[FormSpec, dict, dict, list]:
                     placeholder=attrs.get("placeholder"),
                     tooltip=attrs.get("tooltip"),
                     description=attrs.get("description"),
+                    hidden=attrs.get("hidden") if isinstance(attrs.get("hidden"), bool) else None,
+                    disabled=attrs.get("disabled") if isinstance(attrs.get("disabled"), bool) else None,
+                    logic=_safe_logic(attrs.get("logic")),
+                    calculate_value=attrs.get("calculateValue") if isinstance(attrs.get("calculateValue"), str) else None,
                 )
             )
             existing[key] = {"id": eid, "type": etype, "attributes": dict(attrs)}
@@ -163,6 +185,18 @@ def spec_to_schema(
             attrs["options"] = f.options or ["Option 1"]
         else:
             attrs.pop("options", None)
+
+        # Advanced behaviours — set when provided (None = leave as-is; a same-type merge already
+        # carried any prior value). hidden/disabled/logic apply to any field; calculateValue is
+        # meaningless on a button (it has no value), so skip it there.
+        if f.hidden is not None:
+            attrs["hidden"] = f.hidden
+        if f.disabled is not None:
+            attrs["disabled"] = f.disabled
+        if f.logic is not None:
+            attrs["logic"] = [r.model_dump(exclude_none=True) for r in f.logic]
+        if f.calculate_value is not None and f.type not in NO_REQUIRED_TYPES:
+            attrs["calculateValue"] = f.calculate_value
 
         entities[eid] = {"type": f.type, "attributes": attrs}
         root.append(eid)

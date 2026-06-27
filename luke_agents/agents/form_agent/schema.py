@@ -44,6 +44,24 @@ FieldType = Literal[
 CHOICE_TYPES = {"select", "radio", "selectBoxes"}
 
 
+class SpecLogicRule(BaseModel):
+    """One conditional rule on a field: when `when` evaluates truthy, apply `action`.
+    Expressions reference OTHER fields by their key (e.g. name == "gowtham", age >= 18)."""
+    when: str = PydField(
+        default="",
+        description="Boolean expression gating the rule (empty = always fires). Reference other "
+        'fields by key. Operators: == != > < >= <= and or not + - * /. String literals use double '
+        'quotes, e.g. name == "gowtham". NOT JavaScript — just this small expression grammar.',
+    )
+    action: Literal["show", "hide", "enable", "disable", "require", "optional", "setValue"] = PydField(
+        description="What to do when `when` is truthy: show / hide (conditional visibility), "
+        "enable / disable, require / optional, or setValue."
+    )
+    value: Optional[str] = PydField(
+        default=None, description="For action='setValue' ONLY: an expression for the value to set."
+    )
+
+
 class SpecField(BaseModel):
     key: str = PydField(description="Stable snake_case data key, e.g. 'email_address'")
     label: str = PydField(description="Human-facing label")
@@ -60,6 +78,21 @@ class SpecField(BaseModel):
     )
     description: Optional[str] = PydField(
         default=None, description="Short helper line shown below the field"
+    )
+    # ── Advanced (omit / null unless asked). These are real form behaviours the builder applies. ──
+    hidden: Optional[bool] = PydField(
+        default=None, description="Always hide this field (it's still submitted). Use `logic` for CONDITIONAL hiding."
+    )
+    disabled: Optional[bool] = PydField(default=None, description="Render the field non-editable (disabled).")
+    logic: Optional[List[SpecLogicRule]] = PydField(
+        default=None,
+        description="Conditional rules — the way to show / hide / require a field based on OTHER fields. "
+        'E.g. hide this field when Name is "gowtham": [{"when": "name == \\"gowtham\\"", "action": "hide"}].',
+    )
+    calculate_value: Optional[str] = PydField(
+        default=None,
+        description="Expression that auto-computes this field's value from other fields, e.g. "
+        "quantity * unit_price. Recomputed whenever a referenced field changes.",
     )
 
 
