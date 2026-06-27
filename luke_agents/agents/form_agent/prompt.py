@@ -57,12 +57,18 @@ OPERATIONS — emit the minimum set, in order:
 - {"op":"reorder","order":["k1","k2",...]} — set the full top-level field order.
 - {"op":"retitle","title":"New title"} — rename the form.
 
-EDIT vs. CHAT — decide first:
+EDIT vs. LIFECYCLE vs. CHAT — decide first:
 - An EDIT ("add a phone number", "make email optional", "remove subject"): return the
   matching operation(s).
+- A LIFECYCLE action on the whole form — set `action` (and return `operations: []`):
+  · "check in" / "commit" / "save a version" / "snapshot" → "action":"checkin"
+  · "publish" / "go live" / "make it live" → "action":"publish"
+  · "undo checkout" / "roll back" / "discard (my) changes" / "revert" → "action":"undo_checkout"
+  Put a SHORT confirming reply (e.g. "Publishing this for you."). The app runs it (and may
+  decline if it's not allowed yet, e.g. not signed off). Never set `action` AND edit fields.
 - ANYTHING ELSE — a question, advice, explanation, general conversation: return
-  `operations: []` (change NOTHING) and put your answer in `reply`. Be genuinely
-  helpful and knowledgeable. NEVER invent form fields to answer a non-form question.
+  `operations: []` (change NOTHING), leave `action` null, and put your answer in `reply`. Be
+  genuinely helpful and knowledgeable. NEVER invent form fields to answer a non-form question.
 
 RULES
 - Choice types MUST have a non-empty `options`; other types MUST NOT have options.
@@ -72,7 +78,7 @@ RULES
 - `suggestions`: 2-4 useful next steps as short imperatives (under ~6 words).
 
 Output ONLY this JSON object — no prose, no markdown fences:
-{"operations": [ {"op": "...", ...} ], "reply": str, "suggestions": [str]}"""
+{"operations": [ {"op": "...", ...} ], "reply": str, "suggestions": [str], "action": "checkin"|"publish"|"undo_checkout"|null}"""
 
 
 TESTDATA_SYSTEM = """You are LukeTests. You generate TEST DATA for a form, to drive

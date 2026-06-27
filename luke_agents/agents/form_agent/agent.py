@@ -105,14 +105,16 @@ class FormAgent(Agent):
                     ) from exc
                 raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
 
-            # Apply ONLY the operations the model emitted onto the current form —
-            # fields it didn't mention are carried through untouched.
-            new_spec = apply_operations(spec, turn.operations)
+            # A LIFECYCLE action (check in / publish / undo) is NOT a field edit — ignore any
+            # operations the model may have included and leave the form untouched; the app runs
+            # the action (and enforces whether it's currently allowed).
+            ops = [] if turn.action else turn.operations
+            new_spec = apply_operations(spec, ops)
             out_schema = spec_to_schema(new_spec, existing, preserved_entities, preserved_root_ids)
             # Structural compare: equal dicts (any attr order) with equal root order
             # means the form is untouched (a question / chit-chat) — UI can skip re-applying.
             current_schema = req.schema or {"entities": {}, "root": []}
-            changed = bool(turn.operations) and out_schema != current_schema
+            changed = bool(ops) and out_schema != current_schema
             # Persist off the response path so it adds no latency to the user's turn.
             background.add_task(_record, turn.model_dump(), changed, None)
             return ChatResponse(
@@ -121,6 +123,7 @@ class FormAgent(Agent):
                 reply=turn.reply,
                 suggestions=turn.suggestions,
                 changed=changed,
+                action=turn.action,
                 brain=llm.active_brain(),
                 turn_id=turn_id,
             )

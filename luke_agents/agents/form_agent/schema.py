@@ -107,6 +107,13 @@ class AssistantTurn(BaseModel):
         description="2-4 short, actionable next-step ideas as imperatives, e.g. "
         "'Add a phone number'. Each under ~6 words.",
     )
+    action: Optional[Literal["checkin", "publish", "undo_checkout"]] = PydField(
+        default=None,
+        description="Set ONLY when the user asks to perform a LIFECYCLE action on the whole form "
+        "rather than edit fields: 'checkin' (check in / commit / save a version / snapshot), "
+        "'publish' (publish / go live / make it live), or 'undo_checkout' (undo checkout / roll "
+        "back / discard changes / revert). When set, leave `operations` EMPTY. Null for everything else.",
+    )
 
 
 class TestDataItem(BaseModel):
@@ -155,6 +162,7 @@ class ChatResponse(BaseModel):
     reply: str = ""  # natural-language message to show the user
     suggestions: List[str] = []  # clickable next-step ideas
     changed: bool = True  # False when the form was untouched (e.g. a question)
+    action: Optional[str] = None  # lifecycle intent the app should run: checkin|publish|undo_checkout
     brain: str  # which LLM produced this ("groq" | "gemini" | "ollama")
     turn_id: Optional[str] = None  # transcript id; echo to /feedback to label this turn
 
