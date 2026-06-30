@@ -31,8 +31,14 @@ from .schema import CHOICE_TYPES, FormSpec, SpecField
 # All of these accept `label` and `key`.
 KNOWN_FIELD_TYPES = {
     "textField", "textarea", "number", "email", "phoneNumber",
-    "checkbox", "select", "radio", "selectBoxes", "datetime", "currency", "button",
+    "checkbox", "select", "radio", "selectBoxes", "datetime", "currency",
+    "addressBlock", "button",
 }
+
+# The standard Lukeflow geocoding provider for the structured address field. An `addressBlock`
+# becomes a type-ahead autocomplete (street → fills city/region/postal/country) when it names a
+# `dataSource` minion; we attach the platform default so the LLM only has to choose the TYPE.
+ADDRESS_DATA_SOURCE = {"minion": "geocode"}
 
 # Types whose coltorapps definition includes `placeholderAttribute`. Setting
 # `placeholder` on any other type produces an "Unknown entity attribute" schema.
@@ -185,6 +191,13 @@ def spec_to_schema(
             attrs["options"] = f.options or ["Option 1"]
         else:
             attrs.pop("options", None)
+
+        # A structured address field autocompletes via the platform geocoding provider. Default it
+        # in (preserving any provider already configured) so the LLM only chooses type=addressBlock.
+        if f.type == "addressBlock":
+            attrs.setdefault("dataSource", dict(ADDRESS_DATA_SOURCE))
+        else:
+            attrs.pop("dataSource", None)  # strip if carried from a prior type
 
         # Advanced behaviours — set when provided (None = leave as-is; a same-type merge already
         # carried any prior value). hidden/disabled/logic apply to any field; calculateValue is

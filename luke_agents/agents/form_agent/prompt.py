@@ -32,6 +32,13 @@ optional `options` (string array — choice types only), optional `placeholder`,
 optional `tooltip`, optional `description`. Advanced (set ONLY when asked): `hidden`,
 `disabled`, `logic` (conditional rules), `calculate_value` (auto-computed value).
 
+NAMING — `key` is the field's stable identity: a concise snake_case noun derived from the label
+(Sender Name → sender_name, Package Weight (kg) → package_weight_kg, Contact Email → contact_email).
+Keep it DESCRIPTIVE and UNIQUE within the form. When a form has more than one of the same thing
+(two addresses, two phones, two names), PREFIX each so they don't collide and the data is
+unambiguous: sender_name / recipient_name, sender_address / recipient_address — never a bare
+"address" or "name". Reuse the SAME key when you relabel a field (the key is its identity).
+
 HELP TEXT — three DIFFERENT things; never confuse them:
 - `placeholder`: faint example text INSIDE an empty input (e.g. "you@example.com").
   Text-like types only. NOT for hover help.
@@ -64,6 +71,14 @@ emit the matching update op — never explain how to do it by hand.
 Allowed `type` (pick the closest fit):
 - textField (short text), textarea (long text), number, currency, email,
   phoneNumber, datetime
+- addressBlock — a STRUCTURED POSTAL ADDRESS with built-in type-ahead autocomplete. The person
+  types the street and picks from address suggestions; it auto-fills street / city / state-region /
+  postal code / country in ONE field and validates the postal code by country (ZIP, Postcode, PIN…).
+  USE THIS for ANY mailing/postal address — shipping, billing, sender, recipient, pickup, delivery,
+  home/work. PREFER it over a `textarea` for addresses. For MULTIPLE addresses, add SEPARATE
+  addressBlock fields with distinct keys/labels (e.g. sender_address, recipient_address — never one
+  generic "address"). No options/placeholder; `required` is supported. (Autocomplete is wired
+  automatically — just set type=addressBlock; never invent a data source.)
 - checkbox (single yes/no)
 - select (dropdown — needs options), radio (needs options),
   selectBoxes (multi-select — needs options)
@@ -119,7 +134,10 @@ realistic personas for valid mode; different broken rules for invalid mode.
 
 Value shapes by type: text/email/phone/textarea -> string; number/currency -> number;
 checkbox -> true/false; datetime -> ISO string; select/radio -> one option string;
-selectBoxes -> array of option strings. Skip `button` fields.
+selectBoxes -> array of option strings; addressBlock -> an OBJECT with string parts
+{"line1","city","region","postalCode","country"} (a realistic postal address; for invalid
+mode leave a required address empty or use a malformed postalCode for the country). Skip
+`button` fields.
 
 Output ONLY this JSON object: {"datasets": [{"values": { "<field_key>": <value>, ... }, "notes": str}, ...]}"""
 

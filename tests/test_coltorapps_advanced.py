@@ -61,3 +61,34 @@ def test_malformed_logic_is_dropped_not_fatal():
     }}}, "root": ["e1"]}
     f = schema_to_spec(schema)[0].fields[0]
     assert f.logic is not None and len(f.logic) == 1 and f.logic[0].action == "hide"
+
+
+# ── Structured address field (addressBlock) ──────────────────────────────────────────────────────
+def test_address_block_gets_the_geocode_provider_and_is_structured():
+    schema = spec_to_schema(FormSpec(fields=[
+        _field(key="sender_address", label="Sender Address", type="addressBlock", required=True,
+               placeholder="ignored", options=["ignored"]),
+    ]))
+    attrs = _attrs(schema, "sender_address")
+    assert attrs["dataSource"] == {"minion": "geocode"}  # autocomplete wired automatically
+    assert attrs["required"] is True
+    assert "placeholder" not in attrs and "options" not in attrs  # not a text/choice field
+    assert schema_to_spec(schema)[0].fields[0].type == "addressBlock"  # reads back for editing
+
+
+def test_two_addresses_keep_distinct_keys_each_with_autocomplete():
+    schema = spec_to_schema(FormSpec(fields=[
+        _field(key="sender_address", label="Sender Address", type="addressBlock"),
+        _field(key="recipient_address", label="Recipient Address", type="addressBlock"),
+    ]))
+    assert _attrs(schema, "sender_address")["dataSource"] == {"minion": "geocode"}
+    assert _attrs(schema, "recipient_address")["dataSource"] == {"minion": "geocode"}
+    assert [e["attributes"]["key"] for e in schema["entities"].values()] == ["sender_address", "recipient_address"]
+
+
+def test_address_provider_survives_an_unrelated_relabel():
+    base = spec_to_schema(FormSpec(fields=[_field(key="addr", label="Address", type="addressBlock")]))
+    spec, existing, pe, pr = schema_to_spec(base)
+    spec.fields[0].label = "Delivery Address"  # relabel only
+    out = spec_to_schema(spec, existing, pe, pr)
+    assert _attrs(out, "addr")["dataSource"] == {"minion": "geocode"}

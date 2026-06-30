@@ -38,6 +38,7 @@ FieldType = Literal[
     "selectBoxes",
     "datetime",
     "currency",
+    "addressBlock",
     "button",
 ]
 
