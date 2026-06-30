@@ -135,7 +135,7 @@ realistic personas for valid mode; different broken rules for invalid mode.
 Value shapes by type: text/email/phone/textarea -> string; number/currency -> number;
 checkbox -> true/false; datetime -> ISO string; select/radio -> one option string;
 selectBoxes -> array of option strings; addressBlock -> an OBJECT with string parts
-{"line1","city","region","postalCode","country"} (a realistic postal address; for invalid
+{"streetAddress","city","region","postalCode","country"} (a realistic postal address; for invalid
 mode leave a required address empty or use a malformed postalCode for the country). Skip
 `button` fields.
 
