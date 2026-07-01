@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 
 from luke_agents.agents.email_agent import EmailAgent
 from luke_agents.agents.form_agent import FormAgent
+from luke_agents.agents.sentiment_agent import SentimentAgent
+from luke_agents.agents.workflow_agent import WorkflowAgent
 from luke_agents.core import build_app
 
 load_dotenv()
@@ -15,7 +17,8 @@ load_dotenv()
 AGENTS = [
     FormAgent(),
     EmailAgent(),
-    # Add more agents here, e.g. WorkflowAgent(), ...
+    SentimentAgent(),
+    WorkflowAgent(),
 ]
 
 app = build_app(AGENTS, default_slug="form")
