@@ -180,6 +180,9 @@ class ChatRequest(BaseModel):
     # empty for a brand-new form.
     schema: Optional[dict] = None
     title: Optional[str] = PydField(default=None, max_length=500)
+    # Authoring intent: "outbound" switches on two-party guidance (disabled display fields vs
+    # required recipient fields). Anything else (incl. None / "inbound") uses the default prompt.
+    kind: Optional[str] = PydField(default=None, max_length=20)
     user_id: Optional[str] = PydField(default=None, max_length=200)  # advisory only; budget is keyed by IP
     session_id: Optional[str] = PydField(default=None, max_length=200)  # stable id grouping turns of one conversation
     consent: bool = True  # may this turn be retained for model fine-tuning?

@@ -118,6 +118,25 @@ Output ONLY this JSON object — no prose, no markdown fences:
 {"operations": [ {"op": "...", ...} ], "reply": str, "suggestions": [str], "action": "checkin"|"publish"|"undo_checkout"|null}"""
 
 
+# Appended to SYSTEM when the form is OUTBOUND. The field's own properties (disabled vs required)
+# ARE the two-party contract — the recipient fill surface renders disabled fields read-only, so this
+# is how "who fills what" is enforced (no separate role config).
+OUTBOUND_GUIDANCE = """
+
+── OUTBOUND FORM MODE (this form is prefilled by a preparer, then SENT to a recipient) ──
+Design it as a TWO-PARTY form and express the split through each field's OWN properties:
+- Information the recipient only needs to SEE / confirm — their name, an account or reference
+  number, amounts, dates or terms the preparer sets → set `"disabled": true`. These are prefilled
+  by the preparer and shown READ-ONLY to the recipient (never something they should change).
+- What the RECIPIENT must provide or decide — their answers, a required selection, uploads,
+  agreement → leave editable and set `"required": true` when they must act on it.
+- Include the recipient's identity as DISABLED display fields when relevant (first_name, last_name,
+  email) so they can confirm who the form is for — prefilled, not editable.
+Prefer this disabled-vs-required split over written instructions: at fill time the field properties
+are what actually enforce the interaction. When the user asks for an outbound/"send to someone" form,
+default new identity/reference fields to disabled and the recipient's own inputs to required."""
+
+
 TESTDATA_SYSTEM = """You are LukeTests. You generate TEST DATA for a form, to drive
 its validation in a builder's "Test" feature. You are given the form's fields, a MODE,
 and a COUNT.

@@ -17,7 +17,7 @@ from ...core.tenancy import resolve_tenant
 from ...core.transcripts import Feedback, TurnRecord, safe_record_feedback, safe_record_turn
 from .coltorapps import schema_to_spec, spec_to_schema
 from .ops import apply_operations
-from .prompt import SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
+from .prompt import OUTBOUND_GUIDANCE, SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
 from .schema import (
     AssistantTurn,
     ChatRequest,
@@ -73,8 +73,11 @@ class FormAgent(Agent):
                 spec.title = req.title
 
             # The exact messages we send ARE the fine-tuning input — record them as-is.
+            # Outbound forms get the two-party guidance appended so the model sets disabled/required
+            # field properties that encode who fills what (the fill surface enforces disabled).
+            system = SYSTEM + OUTBOUND_GUIDANCE if (req.kind or "").lower() == "outbound" else SYSTEM
             user_msg = build_user_message(spec, req.message)
-            messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_msg}]
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": user_msg}]
             turn_id = str(uuid.uuid4())
             t0 = time.perf_counter()
 
@@ -90,7 +93,7 @@ class FormAgent(Agent):
                 ))
 
             try:
-                turn = llm.generate(SYSTEM, user_msg, AssistantTurn, temperature=0.4)
+                turn = llm.generate(system, user_msg, AssistantTurn, temperature=0.4)
             except Exception as exc:  # invalid JSON, model/network error, rate limit, etc.
                 # Record failures too (excluded from training, useful for analysis).
                 _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
