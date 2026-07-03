@@ -1,0 +1,79 @@
+name: Security Scan
+# Layer-1 continuous security (see luke-platform/security/README.md):
+#   • SAST            — Semgrep (auto-detects the repo's languages)
+#   • Secret scanning — gitleaks (full history)
+#   • Deps/IaC/misconfig — Trivy filesystem scan (dependency CVEs, Dockerfile & config)
+#
+# INFORMATIONAL BY DESIGN at first: every step is non-blocking, so a pre-existing
+# finding can never break delivery. Triage the baseline in the Security tab, then
+# remove the `continue-on-error` flags to make a category gating. Findings upload as
+# SARIF where GitHub code scanning is enabled (best-effort otherwise).
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+  schedule:
+    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC — catches newly-disclosed CVEs
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write # SARIF upload to the Security tab
+
+jobs:
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      # `--config auto` selects rulesets from the languages present (Java/Python/JS/TS/…).
+      - run: semgrep scan --config auto --sarif --output semgrep.sarif || true
+      - uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so a secret in any past commit is caught
+      # Run the CLI image directly (the marketplace action needs a paid org licence).
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            detect --source=/repo --redact -v --report-format sarif --report-path /repo/gitleaks.sarif || true
+      - uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  deps:
+    name: Deps/IaC (Trivy)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
