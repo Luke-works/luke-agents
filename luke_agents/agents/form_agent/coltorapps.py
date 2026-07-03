@@ -31,8 +31,14 @@ from .schema import CHOICE_TYPES, FormSpec, SpecField
 # All of these accept `label` and `key`.
 KNOWN_FIELD_TYPES = {
     "textField", "textarea", "number", "email", "phoneNumber",
-    "checkbox", "select", "radio", "selectBoxes", "datetime", "currency", "button",
+    "checkbox", "select", "radio", "selectBoxes", "datetime", "currency",
+    "addressBlock", "button",
 }
+
+# The standard Lukeflow geocoding provider for the structured address field. An `addressBlock`
+# becomes a type-ahead autocomplete (street → fills city/region/postal/country) when it names a
+# `dataSource` minion; we attach the platform default so the LLM only has to choose the TYPE.
+ADDRESS_DATA_SOURCE = {"minion": "geocode"}
 
 # Types whose coltorapps definition includes `placeholderAttribute`. Setting
 # `placeholder` on any other type produces an "Unknown entity attribute" schema.
@@ -49,6 +55,24 @@ def _new_id() -> str:
     # coltorapps validates entity ids as canonical UUIDs (8-4-4-4-12); a
     # truncated hex string is rejected by validateEntityId.
     return str(uuid.uuid4())
+
+
+_LOGIC_ACTIONS = {"show", "hide", "enable", "disable", "require", "optional", "setValue"}
+
+
+def _safe_logic(raw: object) -> list | None:
+    """Read existing logic rules leniently — keep only well-formed {when, action[, value]} so a
+    hand-edited schema can't break the projection (and the LLM still sees the valid rules)."""
+    if not isinstance(raw, list):
+        return None
+    out: list = []
+    for r in raw:
+        if isinstance(r, dict) and r.get("action") in _LOGIC_ACTIONS:
+            rule = {"when": str(r.get("when") or ""), "action": r["action"]}
+            if r.get("value") is not None:
+                rule["value"] = str(r["value"])
+            out.append(rule)
+    return out or None
 
 
 def schema_to_spec(schema: dict | None) -> tuple[FormSpec, dict, dict, list]:
@@ -88,6 +112,12 @@ def schema_to_spec(schema: dict | None) -> tuple[FormSpec, dict, dict, list]:
                     required=bool(attrs.get("required", False)),
                     options=list(opts) if isinstance(opts, list) else None,
                     placeholder=attrs.get("placeholder"),
+                    tooltip=attrs.get("tooltip"),
+                    description=attrs.get("description"),
+                    hidden=attrs.get("hidden") if isinstance(attrs.get("hidden"), bool) else None,
+                    disabled=attrs.get("disabled") if isinstance(attrs.get("disabled"), bool) else None,
+                    logic=_safe_logic(attrs.get("logic")),
+                    calculate_value=attrs.get("calculateValue") if isinstance(attrs.get("calculateValue"), str) else None,
                 )
             )
             existing[key] = {"id": eid, "type": etype, "attributes": dict(attrs)}
@@ -161,6 +191,25 @@ def spec_to_schema(
             attrs["options"] = f.options or ["Option 1"]
         else:
             attrs.pop("options", None)
+
+        # A structured address field autocompletes via the platform geocoding provider. Default it
+        # in (preserving any provider already configured) so the LLM only chooses type=addressBlock.
+        if f.type == "addressBlock":
+            attrs.setdefault("dataSource", dict(ADDRESS_DATA_SOURCE))
+        else:
+            attrs.pop("dataSource", None)  # strip if carried from a prior type
+
+        # Advanced behaviours — set when provided (None = leave as-is; a same-type merge already
+        # carried any prior value). hidden/disabled/logic apply to any field; calculateValue is
+        # meaningless on a button (it has no value), so skip it there.
+        if f.hidden is not None:
+            attrs["hidden"] = f.hidden
+        if f.disabled is not None:
+            attrs["disabled"] = f.disabled
+        if f.logic is not None:
+            attrs["logic"] = [r.model_dump(exclude_none=True) for r in f.logic]
+        if f.calculate_value is not None and f.type not in NO_REQUIRED_TYPES:
+            attrs["calculateValue"] = f.calculate_value
 
         entities[eid] = {"type": f.type, "attributes": attrs}
         root.append(eid)

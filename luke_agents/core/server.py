@@ -11,19 +11,50 @@ Mounting rules:
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-import logging
-
+from .auth import require_api_key
 from .llm import active_brain
+from .observability import CorrelationIdMiddleware, configure_logging
 from .registry import Agent
 from .transcripts import get_store
 
 log = logging.getLogger("luke_agents.server")
+
+
+def _cors_kwargs(raw: str) -> dict:
+    """Translate the AGENTS_CORS env into CORSMiddleware kwargs.
+
+    Starlette's `allow_origins` is EXACT-match only — an entry like
+    `https://*.lukeflow.com` would never match `https://consdev.lukeflow.com` and
+    every preflight from that origin 400s. So we split entries: exact origins go
+    to `allow_origins`, and any with a `*` become an `allow_origin_regex` (which
+    Starlette matches with fullmatch). `*` alone means allow everything.
+    """
+    raw = raw.strip()
+    if raw == "*":
+        return {"allow_origins": ["*"]}
+    entries = [o.strip() for o in raw.split(",") if o.strip()]
+    exact = [o for o in entries if "*" not in o]
+    wild = [o for o in entries if "*" in o]
+    kwargs: dict = {}
+    if exact:
+        kwargs["allow_origins"] = exact
+    if wild:
+        # Escape each pattern, then turn the wildcard into a DNS-label matcher
+        # (e.g. https://*.lukeflow.com -> https://[A-Za-z0-9-]+\.lukeflow\.com).
+        kwargs["allow_origin_regex"] = "|".join(
+            re.escape(p).replace(r"\*", r"[A-Za-z0-9-]+") for p in wild
+        )
+    if not kwargs:  # misconfigured (e.g. empty) — fail closed to same-origin only
+        kwargs["allow_origins"] = []
+    return kwargs
 
 
 def _mount_static(app: FastAPI, agent: Agent, prefix: str) -> None:
@@ -40,7 +71,32 @@ def _mount_static(app: FastAPI, agent: Agent, prefix: str) -> None:
         app.add_api_route(path, page, methods=["GET"], response_class=HTMLResponse, include_in_schema=False)
 
 
+def assert_prod_hardened() -> None:
+    """When AGENTS_ENV marks a production deployment, refuse to start unless the
+    security posture is locked down — so a misconfig can't silently ship an open,
+    world-CORS, token-burnable service. Mirrors core-engine's strict prod profile.
+    No-op unless AGENTS_ENV is prod/production."""
+    env = os.getenv("AGENTS_ENV", "").strip().lower()
+    if env not in ("prod", "production"):
+        return
+    problems: list[str] = []
+    if not os.getenv("AGENTS_API_KEY", "").strip():
+        problems.append("AGENTS_API_KEY unset — endpoints would be unauthenticated")
+    cors = os.getenv("AGENTS_CORS", os.getenv("FORM_AGENT_CORS", "*")).strip()
+    if cors == "*" or not cors:
+        problems.append("AGENTS_CORS is '*'/unset — CORS would be wide open")
+    if os.getenv("AGENTS_REQUIRE_TENANT", "").strip().lower() not in ("1", "true", "yes", "on"):
+        problems.append("AGENTS_REQUIRE_TENANT not true — all traffic collapses to one budget")
+    if problems:
+        raise RuntimeError(
+            f"Refusing to start in production (AGENTS_ENV={env}): "
+            + "; ".join(problems)
+            + ". Set these before deploying."
+        )
+
+
 def build_app(agents: list[Agent], *, default_slug: str | None = None, title: str = "luke-agents") -> FastAPI:
+    assert_prod_hardened()  # fail fast if a prod deploy isn't locked down
     if not agents:
         raise ValueError("build_app needs at least one agent")
     by_slug = {a.meta.slug: a for a in agents}
@@ -48,17 +104,23 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         raise ValueError("agent slugs must be unique")
     default = by_slug.get(default_slug) if default_slug else agents[0]
 
+    configure_logging()  # JSON logs tagged with the per-request correlation id (#21)
     app = FastAPI(title=title, version="0.1.0")
 
+    # Correlation id first (outermost): added AFTER CORS so it wraps it and every
+    # request thread has the id set before any handler/log runs.
+
     # Allow browser clients (e.g. the consumer-ui Form Builder) to call us. Set
-    # AGENTS_CORS to a comma-separated origin list in prod to lock it down.
+    # AGENTS_CORS to a comma-separated origin list in prod to lock it down;
+    # entries may use a `*` subdomain wildcard (e.g. https://*.lukeflow.com).
     origins = os.getenv("AGENTS_CORS", os.getenv("FORM_AGENT_CORS", "*"))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if origins.strip() == "*" else [o.strip() for o in origins.split(",")],
         allow_methods=["*"],
         allow_headers=["*"],
+        **_cors_kwargs(origins),
     )
+    app.add_middleware(CorrelationIdMiddleware)  # outermost (added last)
 
     @app.on_event("startup")
     def _init_transcripts() -> None:
@@ -86,13 +148,20 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
             ],
         }
 
+    # The API-key gate is applied at the router level so it covers every agent
+    # route uniformly — including any added later (#32). /health and / are declared
+    # on the app above (outside any router) and stay open by design.
     for agent in agents:
         prefix = f"/agents/{agent.meta.slug}"
-        app.include_router(agent.build_router(), prefix=prefix)
+        app.include_router(
+            agent.build_router(), prefix=prefix, dependencies=[Depends(require_api_key)]
+        )
         _mount_static(app, agent, prefix)
 
     # Default agent also at root for drop-in single-agent compatibility.
-    app.include_router(default.build_router(), prefix="")
+    app.include_router(
+        default.build_router(), prefix="", dependencies=[Depends(require_api_key)]
+    )
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index() -> str:

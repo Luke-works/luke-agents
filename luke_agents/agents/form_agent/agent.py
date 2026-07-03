@@ -13,31 +13,42 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.ratelimit import enforce
+from ...core.tenancy import resolve_tenant
 from ...core.transcripts import Feedback, TurnRecord, safe_record_feedback, safe_record_turn
 from .coltorapps import schema_to_spec, spec_to_schema
-from .prompt import SYSTEM, build_user_message
-from .schema import AssistantTurn, ChatRequest, ChatResponse, FeedbackRequest
+from .ops import apply_operations
+from .prompt import OUTBOUND_GUIDANCE, SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
+from .schema import (
+    AssistantTurn,
+    ChatRequest,
+    ChatResponse,
+    FeedbackRequest,
+    TestDataItem,
+    TestDataRequest,
+    TestDataResponse,
+    TestDataTurn,
+)
 
 _STATIC = Path(__file__).parent / "static" / "index.html"
 
 
-def _rate_key(req: ChatRequest, request: Request) -> str:
-    """Identify the caller for rate limiting: the signed-in user id when the
-    client sends it, otherwise the originating IP (Render sets X-Forwarded-For).
-    Namespaced by agent slug so each agent has its own per-caller budget."""
-    if req.user_id:
-        who = f"user:{req.user_id}"
-    else:
-        fwd = request.headers.get("x-forwarded-for", "")
-        ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-        who = f"ip:{ip}"
-    return f"form:{who}"
+def _rate_key(request: Request, tenant: str) -> str:
+    """Budget key bound to the tenant + originating IP (Render sets X-Forwarded-For).
+
+    Namespaced by tenant (#33) so each org has its own budget, then by IP within the
+    tenant. Deliberately NOT the client-supplied ``user_id``: that field is
+    unauthenticated and a caller could rotate it per request to mint a fresh budget
+    and drive unbounded AI spend. Namespaced by agent slug so each agent has its own
+    budget."""
+    fwd = request.headers.get("x-forwarded-for", "")
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
+    return f"form:t:{tenant}:ip:{ip}"
 
 
 class FormAgent(Agent):
     meta = AgentMeta(
         slug="form",
-        name="LukeTalks Form Builder",
+        name="LukeBuilds Form Builder",
         description="Describe a form in plain language; get a live coltorapps form schema back.",
         version="0.2.0",
     )
@@ -50,8 +61,10 @@ class FormAgent(Agent):
 
         @router.post("/chat", response_model=ChatResponse)
         def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
-            # Per-user rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(req, request))
+            # Auth (require_api_key) is enforced as a router-level dependency in build_app.
+            tenant = resolve_tenant(request)
+            # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
+            enforce(_rate_key(request, tenant))
 
             # Project the incoming coltorapps schema to a flat spec, keeping the
             # bits we must not lose so the rebuild can merge instead of clobber.
@@ -60,8 +73,11 @@ class FormAgent(Agent):
                 spec.title = req.title
 
             # The exact messages we send ARE the fine-tuning input — record them as-is.
+            # Outbound forms get the two-party guidance appended so the model sets disabled/required
+            # field properties that encode who fills what (the fill surface enforces disabled).
+            system = SYSTEM + OUTBOUND_GUIDANCE if (req.kind or "").lower() == "outbound" else SYSTEM
             user_msg = build_user_message(spec, req.message)
-            messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_msg}]
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": user_msg}]
             turn_id = str(uuid.uuid4())
             t0 = time.perf_counter()
 
@@ -70,13 +86,14 @@ class FormAgent(Agent):
                     id=turn_id, agent=self.meta.slug,
                     brain=llm.active_brain(), model=llm.active_model(),
                     messages=messages, output=output, input_schema=req.schema,
+                    tenant_id=tenant,
                     user_id=req.user_id, session_id=req.session_id, changed=changed,
                     latency_ms=int((time.perf_counter() - t0) * 1000),
                     error=error, consent=req.consent,
                 ))
 
             try:
-                turn = llm.generate(SYSTEM, user_msg, AssistantTurn, temperature=0.4)
+                turn = llm.generate(system, user_msg, AssistantTurn, temperature=0.4)
             except Exception as exc:  # invalid JSON, model/network error, rate limit, etc.
                 # Record failures too (excluded from training, useful for analysis).
                 _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
@@ -86,32 +103,57 @@ class FormAgent(Agent):
                     # Shared free/cheap quota is momentarily exhausted — degrade nicely.
                     raise HTTPException(
                         status_code=429,
-                        detail="LukeTalks is getting a lot of requests right now. "
+                        detail="LukeBuilds is getting a lot of requests right now. "
                         "Please wait a few seconds and try again.",
                     ) from exc
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise HTTPException(status_code=502, detail="agent brain error") from exc
 
-            out_schema = spec_to_schema(turn, existing, preserved_entities, preserved_root_ids)
+            # A LIFECYCLE action (check in / publish / undo) is NOT a field edit — ignore any
+            # operations the model may have included and leave the form untouched; the app runs
+            # the action (and enforces whether it's currently allowed).
+            ops = [] if turn.action else turn.operations
+            new_spec = apply_operations(spec, ops)
+            out_schema = spec_to_schema(new_spec, existing, preserved_entities, preserved_root_ids)
             # Structural compare: equal dicts (any attr order) with equal root order
             # means the form is untouched (a question / chit-chat) — UI can skip re-applying.
             current_schema = req.schema or {"entities": {}, "root": []}
-            changed = out_schema != current_schema
+            changed = bool(ops) and out_schema != current_schema
             # Persist off the response path so it adds no latency to the user's turn.
             background.add_task(_record, turn.model_dump(), changed, None)
             return ChatResponse(
                 schema=out_schema,
-                title=turn.title,
+                title=new_spec.title,
                 reply=turn.reply,
                 suggestions=turn.suggestions,
                 changed=changed,
+                action=turn.action,
                 brain=llm.active_brain(),
                 turn_id=turn_id,
             )
 
+        @router.post("/testdata", response_model=TestDataResponse)
+        def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
+            """Generate valid (should pass) or invalid (should be rejected) test data
+            for the current form, to drive the builder's Test runs."""
+            enforce(_rate_key(request, resolve_tenant(request)))
+            spec, *_ = schema_to_spec(req.schema)
+            if req.title:
+                spec.title = req.title
+            count = max(1, min(req.count or 1, 5))  # cap so one call can't blow the budget
+            try:
+                turn = llm.generate(
+                    TESTDATA_SYSTEM, build_testdata_message(spec, req.mode, count), TestDataTurn, temperature=0.6
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail="agent brain error") from exc
+            datasets = turn.datasets[:count] or [TestDataItem()]
+            return TestDataResponse(datasets=datasets, brain=llm.active_brain())
+
         @router.post("/feedback")
-        def feedback(req: FeedbackRequest) -> dict:
+        def feedback(req: FeedbackRequest, request: Request) -> dict:
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
             only good training examples. Safe no-op if transcripts are disabled."""
+            enforce(_rate_key(request, resolve_tenant(request)))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)
             )

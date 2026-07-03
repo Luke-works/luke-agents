@@ -1,0 +1,7 @@
+# Default reviewer for everything (enforced once branch protection requires CODEOWNERS).
+* @lukeadministrator
+
+# Auth, tenancy, and rate-limiting are the security-sensitive core.
+/luke_agents/core/       @lukeadministrator
+/.github/                @lukeadministrator
+/requirements.txt        @lukeadministrator
