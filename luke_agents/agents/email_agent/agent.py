@@ -95,7 +95,7 @@ class EmailAgent(Agent):
                         detail="LukeMail is getting a lot of requests right now. "
                         "Please wait a few seconds and try again.",
                     ) from exc
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise HTTPException(status_code=502, detail="agent brain error") from exc
 
             # Sanitize/repair: drop unknown blocks, clamp bounds, fill theme
             # defaults — so the UI always gets a valid doc.
@@ -137,7 +137,7 @@ class EmailAgent(Agent):
                     TESTDATA_SYSTEM, build_testdata_message(variables, count), TestDataTurn, temperature=0.6
                 )
             except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise HTTPException(status_code=502, detail="agent brain error") from exc
             samples = turn.samples[:count] or [TestDataItem()]
             return TestDataResponse(samples=samples, brain=llm.active_brain())
 

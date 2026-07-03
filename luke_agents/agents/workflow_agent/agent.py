@@ -75,7 +75,7 @@ class WorkflowAgent(Agent):
                         detail="LukeFlow is getting a lot of requests right now. "
                         "Please wait a few seconds and try again.",
                     ) from exc
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise HTTPException(status_code=502, detail="agent brain error") from exc
 
             # Repair dangling references so the UI always gets a wireable graph.
             doc = repair_doc(doc)

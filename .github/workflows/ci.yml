@@ -6,7 +6,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [develop]
+    branches: [develop, main]
   workflow_dispatch: {}
 
 jobs:
@@ -27,6 +27,12 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pytest fakeredis   # fakeredis backs the Redis rate-limiter test (#27)
+
+      - name: Dependency vulnerability scan
+        # Fails the build on a known-vulnerable dependency (advisory drift).
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --strict
 
       - name: Syntax check (compile everything)
         run: python -m compileall luke_agents main.py

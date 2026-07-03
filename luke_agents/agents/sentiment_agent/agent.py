@@ -92,7 +92,7 @@ def _map_brain_error(exc: Exception) -> HTTPException:
             detail="Sentiment analysis is getting a lot of requests right now. "
             "Please wait a few seconds and try again.",
         )
-    return HTTPException(status_code=502, detail=f"brain error: {exc}")
+    return HTTPException(status_code=502, detail="agent brain error")
 
 
 def _analyze_doc_sections(chunks: list[str], model: str | None) -> list[SentimentAnalysis]:
