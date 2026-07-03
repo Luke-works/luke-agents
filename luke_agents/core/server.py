@@ -71,7 +71,32 @@ def _mount_static(app: FastAPI, agent: Agent, prefix: str) -> None:
         app.add_api_route(path, page, methods=["GET"], response_class=HTMLResponse, include_in_schema=False)
 
 
+def assert_prod_hardened() -> None:
+    """When AGENTS_ENV marks a production deployment, refuse to start unless the
+    security posture is locked down — so a misconfig can't silently ship an open,
+    world-CORS, token-burnable service. Mirrors core-engine's strict prod profile.
+    No-op unless AGENTS_ENV is prod/production."""
+    env = os.getenv("AGENTS_ENV", "").strip().lower()
+    if env not in ("prod", "production"):
+        return
+    problems: list[str] = []
+    if not os.getenv("AGENTS_API_KEY", "").strip():
+        problems.append("AGENTS_API_KEY unset — endpoints would be unauthenticated")
+    cors = os.getenv("AGENTS_CORS", os.getenv("FORM_AGENT_CORS", "*")).strip()
+    if cors == "*" or not cors:
+        problems.append("AGENTS_CORS is '*'/unset — CORS would be wide open")
+    if os.getenv("AGENTS_REQUIRE_TENANT", "").strip().lower() not in ("1", "true", "yes", "on"):
+        problems.append("AGENTS_REQUIRE_TENANT not true — all traffic collapses to one budget")
+    if problems:
+        raise RuntimeError(
+            f"Refusing to start in production (AGENTS_ENV={env}): "
+            + "; ".join(problems)
+            + ". Set these before deploying."
+        )
+
+
 def build_app(agents: list[Agent], *, default_slug: str | None = None, title: str = "luke-agents") -> FastAPI:
+    assert_prod_hardened()  # fail fast if a prod deploy isn't locked down
     if not agents:
         raise ValueError("build_app needs at least one agent")
     by_slug = {a.meta.slug: a for a in agents}
