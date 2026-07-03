@@ -118,3 +118,39 @@ def test_routes_open_when_key_unset(monkeypatch):
     client = TestClient(build_app([FormAgent()]))
     resp = client.post("/feedback", json={"turn_id": "nope"})
     assert resp.status_code != 401
+
+
+# ── prod fail-fast guard (assert_prod_hardened) ───────────────────────────────
+
+from luke_agents.core.server import assert_prod_hardened
+
+
+def _clear_prod_env(monkeypatch):
+    for k in ("AGENTS_ENV", "AGENTS_API_KEY", "AGENTS_CORS", "FORM_AGENT_CORS", "AGENTS_REQUIRE_TENANT"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_prod_guard_noop_when_not_prod(monkeypatch):
+    _clear_prod_env(monkeypatch)
+    # No AGENTS_ENV → dev → never raises even though nothing is configured.
+    assert_prod_hardened()
+    monkeypatch.setenv("AGENTS_ENV", "dev")
+    assert_prod_hardened()
+
+
+def test_prod_guard_fails_open_service(monkeypatch):
+    _clear_prod_env(monkeypatch)
+    monkeypatch.setenv("AGENTS_ENV", "production")
+    with pytest.raises(RuntimeError) as ei:
+        assert_prod_hardened()
+    msg = str(ei.value)
+    assert "AGENTS_API_KEY" in msg and "AGENTS_CORS" in msg and "AGENTS_REQUIRE_TENANT" in msg
+
+
+def test_prod_guard_passes_when_locked_down(monkeypatch):
+    _clear_prod_env(monkeypatch)
+    monkeypatch.setenv("AGENTS_ENV", "production")
+    monkeypatch.setenv("AGENTS_API_KEY", "a-real-key")
+    monkeypatch.setenv("AGENTS_CORS", "https://app.lukeflow.com")
+    monkeypatch.setenv("AGENTS_REQUIRE_TENANT", "true")
+    assert_prod_hardened()  # no raise
