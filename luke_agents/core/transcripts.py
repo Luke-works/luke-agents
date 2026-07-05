@@ -26,7 +26,7 @@ import os
 import re
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +39,55 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# Retention / PII configuration (#29)
+# --------------------------------------------------------------------------- #
+def retention_days() -> Optional[int]:
+    """How long to keep turns, in days. 0 / unset / non-positive = keep forever
+    (no automatic purge). Configured via AGENTS_RETENTION_DAYS."""
+    raw = os.getenv("AGENTS_RETENTION_DAYS", "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        log.warning("AGENTS_RETENTION_DAYS=%r is not an integer; ignoring", raw)
+        return None
+    return n if n > 0 else None
+
+
+def _redaction_enabled() -> bool:
+    return os.getenv("AGENTS_REDACT_PII", "").strip().lower() in ("1", "true", "yes")
+
+
+# Conservative PII patterns. Redaction is OPT-IN (AGENTS_REDACT_PII=true) and best-effort:
+# it scrubs the most common direct identifiers from stored content so the training corpus
+# minimizes retained PII. It is NOT a substitute for consent gating or retention.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_PHONE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s\-().]{0,2}\d){6,}(?!\w)")
+_SSN_RE = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
+
+
+def _redact_text(s: str) -> str:
+    s = _EMAIL_RE.sub("[redacted-email]", s)
+    s = _SSN_RE.sub("[redacted-ssn]", s)
+    s = _PHONE_RE.sub("[redacted-phone]", s)
+    return s
+
+
+def redact(value):
+    """Recursively redact common PII from stored strings (best-effort). Applied to
+    `messages`, `output`, and `input_schema` before persistence when AGENTS_REDACT_PII
+    is on. Structure is preserved; only string leaves are scrubbed."""
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, dict):
+        return {k: redact(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact(v) for v in value]
+    return value
 
 
 @dataclass
@@ -59,15 +108,54 @@ class TurnRecord:
     error: Optional[str] = None  # set when the turn failed (excluded from training)
     consent: bool = True  # whether the caller allows training use
     created_at: str = field(default_factory=_now_iso)
+    # Set by for_storage() to preserve the real prompt hash when content is dropped.
+    _prompt_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
 
     @property
     def prompt_hash(self) -> Optional[str]:
         """sha256 of the system prompt, so turns can be grouped by prompt version
         (system prompts evolve; you train on the one actually used)."""
+        if self._prompt_hash_override is not None:
+            return self._prompt_hash_override
         for m in self.messages:
-            if m.get("role") == "system":
-                return hashlib.sha256(m["content"].encode("utf-8")).hexdigest()
+            content = m.get("content")
+            if m.get("role") == "system" and content:
+                return hashlib.sha256(content.encode("utf-8")).hexdigest()
         return None
+
+    def for_storage(self) -> "TurnRecord":
+        """Return a copy ready to persist, applying consent + redaction (#29).
+
+        - consent=False → store MINIMALLY: keep metadata (id, tenant, timings, error,
+          quality signals) for retention/erasure/analytics, but DROP the message and
+          output content so no user-submitted text is retained without consent.
+        - AGENTS_REDACT_PII=true → best-effort scrub PII from retained content.
+        The prompt_hash is computed from the ORIGINAL system prompt before any dropping,
+        so grouping-by-prompt-version still works on consent=False turns.
+        """
+        # Preserve prompt_hash of the real system prompt before we possibly drop content.
+        original_hash = self.prompt_hash
+        messages, output, input_schema = self.messages, self.output, self.input_schema
+        if self.consent is False:
+            # Minimal record: no user/system content, no model output, no incoming schema.
+            messages = [
+                {"role": m.get("role"), "content": ""} for m in self.messages
+            ]
+            output = None
+            input_schema = None
+        elif _redaction_enabled():
+            messages = redact(self.messages)
+            output = redact(self.output)
+            input_schema = redact(self.input_schema)
+        rec = TurnRecord(
+            id=self.id, agent=self.agent, brain=self.brain, model=self.model,
+            messages=messages, output=output, input_schema=input_schema,
+            tenant_id=self.tenant_id, user_id=self.user_id, session_id=self.session_id,
+            changed=self.changed, latency_ms=self.latency_ms, error=self.error,
+            consent=self.consent, created_at=self.created_at,
+        )
+        rec._prompt_hash_override = original_hash
+        return rec
 
 
 @dataclass
@@ -89,6 +177,13 @@ class TranscriptStore:
         return False
 
     def delete_tenant(self, tenant_id: str) -> int:  # rows erased (#33)
+        return 0
+
+    def delete_for_user(self, *, user_id: Optional[str] = None,
+                        session_id: Optional[str] = None) -> int:  # right-to-erasure (#29)
+        return 0
+
+    def purge_older_than(self, days: int) -> int:  # retention (#29)
         return 0
 
 
@@ -117,7 +212,9 @@ class JsonlStore(TranscriptStore):
                 f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def record_turn(self, rec: TurnRecord) -> None:
+        rec = rec.for_storage()  # apply consent gating + optional redaction (#29)
         row = asdict(rec)
+        row.pop("_prompt_hash_override", None)  # internal-only, don't persist
         row["prompt_hash"] = rec.prompt_hash
         self._append(self.turns, row)
 
@@ -141,13 +238,72 @@ class JsonlStore(TranscriptStore):
                 else:
                     kept_turns.append(line)
             self.turns.write_text("\n".join(kept_turns) + ("\n" if kept_turns else ""), encoding="utf-8")
-            if self.feedback.exists() and removed_ids:
-                kept_fb = [
-                    ln for ln in self.feedback.read_text(encoding="utf-8").splitlines()
-                    if ln.strip() and json.loads(ln).get("turn_id") not in removed_ids
-                ]
-                self.feedback.write_text("\n".join(kept_fb) + ("\n" if kept_fb else ""), encoding="utf-8")
+            self._drop_feedback_for(removed_ids)
             return len(removed_ids)
+
+    def _drop_feedback_for(self, removed_ids: set) -> None:
+        """Rewrite feedback.jsonl dropping rows whose turn_id was erased. Caller holds the lock."""
+        if self.feedback.exists() and removed_ids:
+            kept_fb = [
+                ln for ln in self.feedback.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and json.loads(ln).get("turn_id") not in removed_ids
+            ]
+            self.feedback.write_text("\n".join(kept_fb) + ("\n" if kept_fb else ""), encoding="utf-8")
+
+    def _rewrite_turns(self, keep) -> int:
+        """Rewrite turns.jsonl keeping only rows where keep(row) is True; drop matching
+        turns' feedback too. Returns the number of turns removed. Caller must NOT hold the lock."""
+        with self._lock:
+            if not self.turns.exists():
+                return 0
+            kept_lines, removed_ids = [], set()
+            for line in self.turns.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if keep(row):
+                    kept_lines.append(line)
+                else:
+                    removed_ids.add(row.get("id"))
+            self.turns.write_text("\n".join(kept_lines) + ("\n" if kept_lines else ""), encoding="utf-8")
+            self._drop_feedback_for(removed_ids)
+            return len(removed_ids)
+
+    def delete_for_user(self, *, user_id: Optional[str] = None,
+                        session_id: Optional[str] = None) -> int:
+        """Right-to-erasure (#29): drop every turn matching the given user_id and/or
+        session_id (a row matches if ALL supplied identifiers match)."""
+        if not user_id and not session_id:
+            raise ValueError("delete_for_user requires user_id and/or session_id")
+
+        def keep(row: dict) -> bool:
+            if user_id is not None and row.get("user_id") != user_id:
+                return True
+            if session_id is not None and row.get("session_id") != session_id:
+                return True
+            return False  # all supplied ids matched → erase
+
+        return self._rewrite_turns(keep)
+
+    def purge_older_than(self, days: int) -> int:
+        """Retention (#29): drop turns whose created_at is older than `days` days."""
+        if days <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        def keep(row: dict) -> bool:
+            created = row.get("created_at")
+            if not created:
+                return True  # no timestamp → keep (can't judge age)
+            try:
+                ts = datetime.fromisoformat(created)
+            except ValueError:
+                return True
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts >= cutoff
+
+        return self._rewrite_turns(keep)
 
 
 class PostgresStore(TranscriptStore):
@@ -226,6 +382,7 @@ class PostgresStore(TranscriptStore):
 
         if not self._ready:
             self.init()
+        rec = rec.for_storage()  # apply consent gating + optional redaction (#29)
         sql = f"""
             INSERT INTO {self.schema}.turns
               (id, agent, brain, model, tenant_id, user_id, session_id, prompt_hash,
@@ -265,6 +422,46 @@ class PostgresStore(TranscriptStore):
 
         def run(cur):
             cur.execute(sql, (tenant_id,))
+            return cur.rowcount
+
+        return int(self._run(run))
+
+    def delete_for_user(self, *, user_id: Optional[str] = None,
+                        session_id: Optional[str] = None) -> int:
+        """Right-to-erasure (#29): DELETE turns matching the given user_id and/or
+        session_id (ALL supplied identifiers must match)."""
+        if not self._ready:
+            self.init()
+        if not user_id and not session_id:
+            raise ValueError("delete_for_user requires user_id and/or session_id")
+        clauses, params = [], []
+        if user_id is not None:
+            clauses.append("user_id = %s")
+            params.append(user_id)
+        if session_id is not None:
+            clauses.append("session_id = %s")
+            params.append(session_id)
+        sql = f"DELETE FROM {self.schema}.turns WHERE {' AND '.join(clauses)}"
+
+        def run(cur):
+            cur.execute(sql, tuple(params))
+            return cur.rowcount
+
+        return int(self._run(run))
+
+    def purge_older_than(self, days: int) -> int:
+        """Retention (#29): DELETE turns older than `days` days by created_at."""
+        if not self._ready:
+            self.init()
+        if days <= 0:
+            return 0
+        sql = (
+            f"DELETE FROM {self.schema}.turns "
+            f"WHERE created_at < now() - make_interval(days => %s)"
+        )
+
+        def run(cur):
+            cur.execute(sql, (days,))
             return cur.rowcount
 
         return int(self._run(run))
@@ -319,3 +516,23 @@ def delete_tenant(tenant_id: str) -> int:
     if not tenant_id or not tenant_id.strip():
         raise ValueError("tenant_id is required for erasure")
     return get_store().delete_tenant(tenant_id.strip())
+
+
+def delete_for_user(user_id: Optional[str] = None, session_id: Optional[str] = None) -> int:
+    """Right-to-erasure for one data subject (#29): erase all turns for a user_id
+    and/or session_id. Raises on failure (an ops tool should see it)."""
+    user_id = (user_id or "").strip() or None
+    session_id = (session_id or "").strip() or None
+    if not user_id and not session_id:
+        raise ValueError("a user_id and/or session_id is required for erasure")
+    return get_store().delete_for_user(user_id=user_id, session_id=session_id)
+
+
+def purge_older_than(days: Optional[int] = None) -> int:
+    """Purge turns older than `days` (defaults to AGENTS_RETENTION_DAYS). Returns the
+    number of rows purged; 0 (and no-op) when retention is disabled. Raises on failure."""
+    if days is None:
+        days = retention_days()
+    if not days or days <= 0:
+        return 0
+    return get_store().purge_older_than(days)

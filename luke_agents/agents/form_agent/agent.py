@@ -16,7 +16,7 @@ from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from ...core.transcripts import Feedback, TurnRecord, safe_record_feedback, safe_record_turn
 from .coltorapps import schema_to_spec, spec_to_schema
-from .ops import apply_operations
+from .ops import UnsupportedOperation, apply_operations
 from .prompt import OUTBOUND_GUIDANCE, SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
 from .schema import (
     AssistantTurn,
@@ -112,7 +112,13 @@ class FormAgent(Agent):
             # operations the model may have included and leave the form untouched; the app runs
             # the action (and enforces whether it's currently allowed).
             ops = [] if turn.action else turn.operations
-            new_spec = apply_operations(spec, ops)
+            # Defense in depth (#26): reject ops referencing unknown op kinds / field types
+            # before applying them, even though they already passed Pydantic.
+            try:
+                new_spec = apply_operations(spec, ops)
+            except UnsupportedOperation as exc:
+                _record(output=turn.model_dump(), changed=None, error=f"UnsupportedOperation: {exc}")
+                raise HTTPException(status_code=502, detail="brain returned an unsupported operation") from exc
             out_schema = spec_to_schema(new_spec, existing, preserved_entities, preserved_root_ids)
             # Structural compare: equal dicts (any attr order) with equal root order
             # means the form is untouched (a question / chit-chat) — UI can skip re-applying.

@@ -8,12 +8,39 @@ byte-for-byte identical (same id, same attributes) in the rendered schema.
 """
 from __future__ import annotations
 
+import typing
 from typing import List
 
-from .schema import FormOp, FormSpec, SpecField
+from .schema import FieldType, FormOp, FormSpec, SpecField
+
+# The exact set of field types we know how to render (the coltorapps palette). Pydantic
+# already constrains `SpecField.type` to this Literal, but we re-derive the allowlist and
+# re-check at the apply boundary as defense in depth (#26): a model that emits an op with
+# an unknown type/op is rejected loudly rather than silently rendered.
+_ALLOWED_FIELD_TYPES = set(typing.get_args(FieldType))
+_ALLOWED_OPS = {"add", "update", "remove", "reorder", "retitle"}
+
+
+class UnsupportedOperation(ValueError):
+    """An LLM-produced operation referenced an op kind or field type outside the allowlist."""
+
+
+def validate_operations(operations: List[FormOp]) -> None:
+    """Reject ops referencing unknown op kinds or field types before we apply them.
+
+    Pydantic validation already runs on the parsed model; this is a second, explicit
+    gate right at the apply callsite so a schema drift (or a coaxed-malformed field)
+    can't slip an unrenderable type into the form."""
+    for op in operations:
+        if op.op not in _ALLOWED_OPS:
+            raise UnsupportedOperation(f"unsupported op kind: {op.op!r}")
+        field = op.field
+        if field is not None and field.type not in _ALLOWED_FIELD_TYPES:
+            raise UnsupportedOperation(f"unsupported field type: {field.type!r}")
 
 
 def apply_operations(current: FormSpec, operations: List[FormOp]) -> FormSpec:
+    validate_operations(operations)
     fields: list[SpecField] = list(current.fields)
     title = current.title
 
