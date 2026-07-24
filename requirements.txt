@@ -1,7 +1,7 @@
 fastapi==0.116.2
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
-groq==0.13.1
+groq==1.6.0
 openai>=1.99.0            # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set
 python-dotenv==1.2.1
 psycopg2-binary==2.9.10   # transcript store (only used when DATABASE_URL is set)
