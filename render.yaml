@@ -9,6 +9,9 @@ services:
     # non-Postgres deploy.
     preDeployCommand: sh -c '[ -n "$DATABASE_URL" ] && alembic upgrade head || echo "transcripts: DATABASE_URL unset — skipping migrations"'
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # #35: liveness — /health always-200s if the process is up, so a transient DB blip can't
+    # trigger a restart loop. Dependency health is the separate /health/ready (503-capable) probe.
+    healthCheckPath: /health
     envVars:
       # Pin Python to a version with prebuilt wheels for our deps. 3.14 has no
       # pydantic-core wheel yet and would try (and fail) to compile from Rust.

@@ -14,8 +14,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
@@ -106,7 +107,29 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
     default = by_slug.get(default_slug) if default_slug else agents[0]
 
     configure_logging()  # JSON logs tagged with the per-request correlation id (#21)
-    app = FastAPI(title=title, version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # #36: modern lifespan (replaces the deprecated @app.on_event start/shutdown hooks).
+        # Startup: create the schema/table (or JSONL dir) up front so the first chat doesn't
+        # pay for it and a bad DSN surfaces at boot, not mid-request. Never blocks on failure.
+        store = get_store()
+        try:
+            store.init()
+            log.info("transcripts backend: %s (ephemeral=%s)", store.name, store.ephemeral)
+        except Exception:  # noqa: BLE001
+            log.exception("transcripts: init failed (recording will retry per-turn)")
+        try:
+            yield
+        finally:
+            # Shutdown: give queued transcript writes a bounded chance to drain before the
+            # process exits (Render SIGTERMs on every redeploy). Best-effort (#41).
+            try:
+                flush_pending(timeout=_float_env("AGENTS_TRANSCRIPT_FLUSH_SECONDS", 5.0))
+            except Exception:  # noqa: BLE001
+                log.exception("transcripts: flush on shutdown failed")
+
+    app = FastAPI(title=title, version="0.1.0", lifespan=lifespan)
 
     # Correlation id first (outermost): added AFTER CORS so it wraps it and every
     # request thread has the id set before any handler/log runs.
@@ -123,30 +146,11 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
     )
     app.add_middleware(CorrelationIdMiddleware)  # outermost (added last)
 
-    @app.on_event("startup")
-    def _init_transcripts() -> None:
-        # Best-effort: create the schema/table (or JSONL dir) up front so the
-        # first chat doesn't pay for it — and so a misconfigured DSN shows up in
-        # logs at boot, not mid-request. Never blocks startup on failure.
-        store = get_store()
-        try:
-            store.init()
-            log.info("transcripts backend: %s (ephemeral=%s)", store.name, store.ephemeral)
-        except Exception:  # noqa: BLE001
-            log.exception("transcripts: init failed (recording will retry per-turn)")
-
-    @app.on_event("shutdown")
-    def _flush_transcripts() -> None:
-        # #41: background writes don't survive process teardown by default. Give the queued
-        # turn writes a bounded chance to drain before the process exits (Render redeploys
-        # send SIGTERM). Best-effort; never blocks shutdown beyond the timeout.
-        try:
-            flush_pending(timeout=_float_env("AGENTS_TRANSCRIPT_FLUSH_SECONDS", 5.0))
-        except Exception:  # noqa: BLE001
-            log.exception("transcripts: flush on shutdown failed")
-
     @app.get("/health")
     def health() -> dict:
+        # Liveness: "is the process up and serving". Deliberately can't fail on a downstream
+        # blip (#35) — Render health-checks this, so a transient DB hiccup must not restart the
+        # instance. Readiness (dependency health) is the separate /health/ready probe below.
         store = get_store()
         return {
             "status": "ok",
@@ -161,6 +165,22 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
                 for a in agents
             ],
         }
+
+    @app.get("/health/ready")
+    def readiness(response: Response) -> dict:
+        # Readiness: actually check dependencies (#35). A brain must be resolvable and the
+        # transcript store reachable (Postgres SELECT 1; JSONL/null are always ready). Returns
+        # 503 when not ready so a load balancer / orchestrator can route around a bad instance
+        # without killing it (that's liveness' job).
+        store = get_store()
+        store_ok = store.ping()
+        brain = active_brain()
+        brain_ok = bool(brain)
+        ready = store_ok and brain_ok
+        if not ready:
+            response.status_code = 503
+        return {"ready": ready, "checks": {"transcripts": store_ok, "brain": brain_ok},
+                "brain": brain, "transcripts": store.name}
 
     # The API-key gate is applied at the router level so it covers every agent
     # route uniformly — including any added later (#32). /health and / are declared

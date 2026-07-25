@@ -228,6 +228,9 @@ class TranscriptStore:
     def list_audit(self, *, action: Optional[str] = None, limit: int = 100) -> list:  # queryable (#40)
         return []
 
+    def ping(self) -> bool:  # readiness check (#35) — is the store reachable?
+        return True
+
     def delete_tenant(self, tenant_id: str) -> int:  # rows erased (#33)
         return 0
 
@@ -501,6 +504,15 @@ class PostgresStore(TranscriptStore):
             return cur.rowcount
 
         return bool(self._run(run))
+
+    def ping(self) -> bool:
+        # Readiness (#35): a real round-trip to Postgres. Never raises — a False here means
+        # "not ready", handled by the caller (readiness probe returns 503).
+        try:
+            self._run(lambda cur: cur.execute("SELECT 1"))
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def record_audit(self, rec: "AuditRecord") -> None:
         from psycopg2.extras import Json
