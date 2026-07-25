@@ -22,6 +22,9 @@ from fastapi.responses import HTMLResponse
 
 from .auth import require_api_key
 from .llm import active_brain
+from .metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from .metrics import MetricsMiddleware
+from .metrics import render as render_metrics
 from .observability import CorrelationIdMiddleware, configure_logging
 from .registry import Agent
 from .transcripts import _float_env, flush_pending, get_store
@@ -144,6 +147,7 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         allow_headers=["*"],
         **_cors_kwargs(origins),
     )
+    app.add_middleware(MetricsMiddleware)  # request volume + latency (#22); pure-ASGI, non-buffering
     app.add_middleware(CorrelationIdMiddleware)  # outermost (added last)
 
     @app.get("/health")
@@ -181,6 +185,12 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
             response.status_code = 503
         return {"ready": ready, "checks": {"transcripts": store_ok, "brain": brain_ok},
                 "brain": brain, "transcripts": store.name}
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        # Prometheus scrape target (#22): request volume + latency + status, plus the transcript
+        # write counters. Open (no auth), like /health — it exposes no user data.
+        return Response(content=render_metrics(), media_type=METRICS_CONTENT_TYPE)
 
     # The API-key gate is applied at the router level so it covers every agent
     # route uniformly — including any added later (#32). /health and / are declared
