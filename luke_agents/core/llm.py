@@ -14,10 +14,15 @@ typed object. All form/agent specifics live in the agent, not here.
 """
 from __future__ import annotations
 
+import logging
 import os
+import threading
+import time
 from typing import TypeVar
 
 from pydantic import BaseModel
+
+log = logging.getLogger("luke_agents.llm")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -43,6 +48,110 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 # Render setup. On timeout the SDK raises, the agent maps it to a 502, and the
 # worker is freed.
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+
+# Transient-retry + a lightweight per-brain circuit breaker (#24). A single blip (timeout, 5xx,
+# dropped connection) on the active brain used to surface straight to the user as a 502; now the
+# call is retried with backoff, and if a brain fails repeatedly the breaker opens to fail fast
+# (and stop hammering a down provider) until a short cooldown elapses.
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))                     # retries AFTER the first try
+LLM_RETRY_BASE_SECONDS = float(os.getenv("LLM_RETRY_BASE_SECONDS", "0.25"))  # exponential backoff base
+LLM_BREAKER_THRESHOLD = int(os.getenv("LLM_BREAKER_THRESHOLD", "5"))         # consecutive fails → open
+LLM_BREAKER_COOLDOWN_SECONDS = float(os.getenv("LLM_BREAKER_COOLDOWN_SECONDS", "15"))
+
+
+class BrainUnavailable(RuntimeError):
+    """The active brain's circuit is open (too many recent failures) — fail fast."""
+    status_code = 503
+
+
+# --------------------------------------------------------------------------- #
+# Provider client reuse (#25) — construct each SDK client once and share it, so
+# TCP/TLS connections and pools are reused across turns instead of rebuilt per call.
+# --------------------------------------------------------------------------- #
+_clients: dict = {}
+_clients_lock = threading.Lock()
+
+
+def _cached_client(key: str, factory):
+    client = _clients.get(key)
+    if client is None:
+        with _clients_lock:
+            client = _clients.get(key)
+            if client is None:
+                client = factory()
+                _clients[key] = client
+    return client
+
+
+# --------------------------------------------------------------------------- #
+# Retry + circuit breaker (#24)
+# --------------------------------------------------------------------------- #
+_breaker: dict = {}  # brain -> {"fails": int, "opened_at": float}
+_breaker_lock = threading.Lock()
+
+
+def _is_transient_llm(exc: BaseException) -> bool:
+    """A provider-availability blip worth retrying — a timeout, a dropped connection, or a 5xx.
+    A 429 is NOT retried here (the agent degrades it to a friendly 'busy, retry shortly'), and a
+    validation/programming error is not transient."""
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 429:
+        return False
+    if status in (408, 500, 502, 503, 504):
+        return True
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(m in blob for m in
+               ("timeout", "timed out", "connection", "connectionerror", "temporarily unavailable",
+                "service unavailable", "reset by peer", "econnreset", "read error"))
+
+
+def _breaker_gate(brain: str) -> None:
+    with _breaker_lock:
+        st = _breaker.get(brain)
+        if st and st["fails"] >= LLM_BREAKER_THRESHOLD:
+            if (time.monotonic() - st["opened_at"]) < LLM_BREAKER_COOLDOWN_SECONDS:
+                raise BrainUnavailable(
+                    f"{brain} brain is temporarily unavailable (circuit open); retry shortly")
+            st["fails"] = LLM_BREAKER_THRESHOLD - 1  # cooldown elapsed → half-open (allow one trial)
+
+
+def _breaker_success(brain: str) -> None:
+    with _breaker_lock:
+        _breaker[brain] = {"fails": 0, "opened_at": 0.0}
+
+
+def _breaker_failure(brain: str) -> None:
+    with _breaker_lock:
+        st = _breaker.setdefault(brain, {"fails": 0, "opened_at": 0.0})
+        st["fails"] += 1
+        if st["fails"] >= LLM_BREAKER_THRESHOLD:
+            st["opened_at"] = time.monotonic()
+            log.warning("llm: %s brain circuit OPEN after %d consecutive failures", brain, st["fails"])
+
+
+def _run_brain(brain: str, fn):
+    """Circuit-breaker gate + bounded transient-retry around one brain call (#24). Non-transient
+    errors (validation, 429) surface immediately and do NOT trip the breaker; only exhausted
+    transient failures count toward opening it."""
+    _breaker_gate(brain)
+    attempts = 1 + max(0, LLM_MAX_RETRIES)
+    last: BaseException | None = None
+    for i in range(attempts):
+        try:
+            out = fn()
+            _breaker_success(brain)
+            return out
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if not _is_transient_llm(exc):
+                raise  # not a provider-availability issue — don't retry or trip the breaker
+            if i == attempts - 1:
+                break
+            log.warning("llm: transient %s on %s brain (attempt %d/%d): %s",
+                        type(exc).__name__, brain, i + 1, attempts, exc)
+            time.sleep(LLM_RETRY_BASE_SECONDS * (2 ** i))
+    _breaker_failure(brain)
+    raise last  # type: ignore[misc]
 
 
 def active_brain() -> str:
@@ -93,19 +202,20 @@ def generate(
     configured default. Only meaningful for the brain that's actually active.
     """
     brain = active_brain()
+    # #24: each brain call goes through the circuit-breaker + transient-retry wrapper.
     if brain == "groq":
-        return _groq(system, user, response_model, temperature, model)
+        return _run_brain(brain, lambda: _groq(system, user, response_model, temperature, model))
     if brain == "openai":
-        return _openai(system, user, response_model, model)  # nano ignores temperature
+        return _run_brain(brain, lambda: _openai(system, user, response_model, model))  # nano ignores temperature
     if brain == "gemini":
-        return _gemini(system, user, response_model, temperature, model)
-    return _ollama(system, user, response_model, temperature, model)
+        return _run_brain(brain, lambda: _gemini(system, user, response_model, temperature, model))
+    return _run_brain(brain, lambda: _ollama(system, user, response_model, temperature, model))
 
 
 def _groq(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
     from groq import Groq
 
-    client = Groq(api_key=GROQ_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
+    client = _cached_client("groq", lambda: Groq(api_key=GROQ_API_KEY, timeout=LLM_TIMEOUT_SECONDS))  # #25
     # Groq's json_object response_format returns a 400 unless the word "json" appears somewhere
     # in the messages. Most prompts already describe a JSON output, but append a minimal
     # instruction for any that don't (e.g. the test-data prompt) so the request is never rejected.
@@ -148,7 +258,7 @@ def _openai(system: str, user: str, response_model: type[T], model: str | None =
     """
     from openai import OpenAI
 
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
+    client = _cached_client("openai", lambda: OpenAI(api_key=OPENAI_API_KEY, timeout=LLM_TIMEOUT_SECONDS))  # #25
     kwargs: dict = {
         "model": model or OPENAI_MODEL,
         "messages": [
@@ -180,10 +290,10 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float,
     from google import genai
     from google.genai import types
 
-    client = genai.Client(
+    client = _cached_client("gemini", lambda: genai.Client(  # #25
         api_key=GEMINI_API_KEY,
         http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),  # ms
-    )
+    ))
     resp = client.models.generate_content(
         model=model or GEMINI_MODEL,
         contents=user,
@@ -200,7 +310,7 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float,
 def _ollama(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
     import ollama
 
-    resp = ollama.Client(timeout=LLM_TIMEOUT_SECONDS).chat(
+    resp = _cached_client("ollama", lambda: ollama.Client(timeout=LLM_TIMEOUT_SECONDS)).chat(  # #25
         model=model or OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": system},

@@ -24,6 +24,7 @@ def test_groq_client_receives_timeout(monkeypatch):
     monkeypatch.setattr("groq.Groq", FakeGroq)
     monkeypatch.setattr(llm, "active_brain", lambda: "groq")
     monkeypatch.setattr(llm, "GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "_clients", {})  # #25: clients are cached — start fresh so FakeGroq is built
 
     with pytest.raises(RuntimeError):
         llm.generate("system", "user", _R)

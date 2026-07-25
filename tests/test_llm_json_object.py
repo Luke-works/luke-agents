@@ -31,6 +31,7 @@ def _fake_groq(monkeypatch, captured):
     monkeypatch.setattr("groq.Groq", FakeGroq)
     monkeypatch.setattr(llm, "active_brain", lambda: "groq")
     monkeypatch.setattr(llm, "GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "_clients", {})  # #25: clients are cached — start fresh per test
 
 
 def _messages_blob(captured) -> str:
