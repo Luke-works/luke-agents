@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
 from ...core import llm
@@ -60,7 +60,7 @@ class FormAgent(Agent):
         router = APIRouter(tags=["form"])
 
         @router.post("/chat", response_model=ChatResponse)
-        def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
+        def chat(req: ChatRequest, request: Request) -> ChatResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
@@ -124,8 +124,9 @@ class FormAgent(Agent):
             # means the form is untouched (a question / chit-chat) — UI can skip re-applying.
             current_schema = req.schema or {"entities": {}, "root": []}
             changed = bool(ops) and out_schema != current_schema
-            # Persist off the response path so it adds no latency to the user's turn.
-            background.add_task(_record, turn.model_dump(), changed, None)
+            # Enqueue durably (#41): the submit is instant; the write runs off the response
+            # path on the transcript-writer thread and is flushed on graceful shutdown.
+            _record(turn.model_dump(), changed, None)
             return ChatResponse(
                 schema=out_schema,
                 title=new_spec.title,

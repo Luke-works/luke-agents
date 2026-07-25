@@ -23,7 +23,8 @@ from .auth import require_api_key
 from .llm import active_brain
 from .observability import CorrelationIdMiddleware, configure_logging
 from .registry import Agent
-from .transcripts import get_store
+from .transcripts import _float_env, flush_pending, get_store
+from .transcripts import metrics as transcript_metrics
 
 log = logging.getLogger("luke_agents.server")
 
@@ -130,16 +131,29 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         store = get_store()
         try:
             store.init()
-            log.info("transcripts backend: %s", store.name)
+            log.info("transcripts backend: %s (ephemeral=%s)", store.name, store.ephemeral)
         except Exception:  # noqa: BLE001
             log.exception("transcripts: init failed (recording will retry per-turn)")
 
+    @app.on_event("shutdown")
+    def _flush_transcripts() -> None:
+        # #41: background writes don't survive process teardown by default. Give the queued
+        # turn writes a bounded chance to drain before the process exits (Render redeploys
+        # send SIGTERM). Best-effort; never blocks shutdown beyond the timeout.
+        try:
+            flush_pending(timeout=_float_env("AGENTS_TRANSCRIPT_FLUSH_SECONDS", 5.0))
+        except Exception:  # noqa: BLE001
+            log.exception("transcripts: flush on shutdown failed")
+
     @app.get("/health")
     def health() -> dict:
+        store = get_store()
         return {
             "status": "ok",
             "brain": active_brain(),
-            "transcripts": get_store().name,
+            "transcripts": store.name,
+            "transcripts_ephemeral": store.ephemeral,
+            "transcript_writes": transcript_metrics(),
             "default": default.meta.slug,
             "agents": [
                 {"slug": a.meta.slug, "name": a.meta.name, "description": a.meta.description,

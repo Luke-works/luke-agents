@@ -23,8 +23,10 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +37,34 @@ log = logging.getLogger("luke_agents.transcripts")
 # Schema/identifier guard: we interpolate the schema name into DDL/SQL (you can't
 # bind an identifier as a parameter), so it must be a plain SQL identifier.
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
+def _is_prod() -> bool:
+    """Production deployment marker — reuses the AGENTS_ENV convention the server's
+    assert_prod_hardened() already keys on."""
+    return os.getenv("AGENTS_ENV", "").strip().lower() in ("prod", "production")
 
 
 def _now_iso() -> str:
@@ -170,6 +200,7 @@ class Feedback:
 # --------------------------------------------------------------------------- #
 class TranscriptStore:
     name = "null"
+    ephemeral = False  # True only for stores whose data doesn't survive a redeploy (#28)
 
     def init(self) -> None: ...
     def record_turn(self, rec: TurnRecord) -> None: ...
@@ -195,6 +226,7 @@ class JsonlStore(TranscriptStore):
     """Append-only JSONL — for LOCAL DEV only. Turns and feedback go to separate
     files (append-only can't update a row); the exporter joins them by turn id."""
     name = "jsonl"
+    ephemeral = True  # Render's disk is ephemeral — never a prod backend (#28)
 
     def __init__(self, directory: str) -> None:
         self.dir = Path(directory)
@@ -322,7 +354,12 @@ class PostgresStore(TranscriptStore):
     def _pool_or_connect(self):
         if self._pool is None:
             from psycopg2.pool import ThreadedConnectionPool
-            self._pool = ThreadedConnectionPool(1, 5, self.dsn)
+            # #30: size the pool via env (relative to uvicorn workers/threadpool). Defaults
+            # match the historical 1..5. Exhaustion raises PoolError, which _write_with_retry
+            # treats as transient and retries with backoff rather than dropping the turn.
+            mn = max(1, _int_env("AGENTS_DB_POOL_MIN", 1))
+            mx = max(mn, _int_env("AGENTS_DB_POOL_MAX", 5))
+            self._pool = ThreadedConnectionPool(mn, mx, self.dsn)
         return self._pool
 
     def init(self) -> None:
@@ -481,6 +518,18 @@ def _build_store() -> TranscriptStore:
     if dsn:
         schema = os.getenv("AGENTS_DB_SCHEMA", "luke_agents")
         return PostgresStore(dsn, schema)
+    # No DATABASE_URL. JsonlStore is a DEV-ONLY backend (Render's disk is ephemeral).
+    # #28: in production, refuse to silently downgrade durable storage to ephemeral files —
+    # a config slip would lose the training corpus on the next redeploy with no signal. Warn
+    # loudly and record NOTHING (NullStore) rather than pretend to persist.
+    if _is_prod():
+        log.warning(
+            "transcripts: ENABLED but DATABASE_URL is unset in production (AGENTS_ENV=%s) — "
+            "refusing ephemeral JSONL (data would vanish on redeploy); recording is DISABLED. "
+            "Set DATABASE_URL to persist transcripts.",
+            os.getenv("AGENTS_ENV", ""),
+        )
+        return NullStore()
     return JsonlStore(os.getenv("TRANSCRIPTS_DIR", "data/transcripts"))
 
 
@@ -493,19 +542,155 @@ def get_store() -> TranscriptStore:
     return _store
 
 
+# --------------------------------------------------------------------------- #
+# Durability: metrics, bounded retry, and an off-path write queue (#41, #30)
+# --------------------------------------------------------------------------- #
+_metrics_lock = threading.Lock()
+_metrics = {"turns_written": 0, "turns_dropped": 0, "write_retries": 0, "feedback_dropped": 0}
+
+
+def _incr(name: str, n: int = 1) -> None:
+    with _metrics_lock:
+        _metrics[name] = _metrics.get(name, 0) + n
+
+
+def metrics() -> dict:
+    """Snapshot of transcript-write counters (surfaced in /health). Makes silent write loss
+    observable; ties into the metrics/Prometheus work (#22)."""
+    with _metrics_lock:
+        return dict(_metrics)
+
+
+# psycopg2 transient failures (connection dropped, pool exhausted) are worth retrying; a
+# programming/constraint error is not. Matched by class name so we needn't import psycopg2
+# here (it's absent in dev/JSONL mode).
+_RETRYABLE_EXC = {"PoolError", "OperationalError", "InterfaceError"}
+
+
+def _is_transient(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        if type(cur).__name__ in _RETRYABLE_EXC:
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _with_retry(fn, *, what: str):
+    """Run fn(), retrying transient DB/pool errors with exponential backoff. Re-raises the
+    last error if it's non-transient or attempts are exhausted."""
+    attempts = max(1, _int_env("AGENTS_TRANSCRIPT_WRITE_RETRIES", 3))
+    base = _float_env("AGENTS_TRANSCRIPT_RETRY_BASE_SECONDS", 0.1)
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            if not _is_transient(exc) or i == attempts - 1:
+                raise
+            _incr("write_retries")
+            log.warning("transcripts: transient %s on %s (attempt %d/%d): %s",
+                        type(exc).__name__, what, i + 1, attempts, exc)
+            time.sleep(base * (2 ** i))
+
+
+class _TurnWriter:
+    """Single-threaded, bounded, off-path queue for durable turn writes (#41). Decouples the
+    write from the request lifecycle, retries transient failures, counts drops, and can be
+    flushed on graceful shutdown."""
+
+    def __init__(self, maxsize: int) -> None:
+        self._q: "queue.Queue[Optional[TurnRecord]]" = queue.Queue(maxsize=maxsize)
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    def _ensure_started(self) -> None:
+        if self._thread is not None:
+            return
+        with self._lock:
+            if self._thread is None:
+                t = threading.Thread(target=self._loop, name="transcript-writer", daemon=True)
+                t.start()
+                self._thread = t
+
+    def submit(self, rec: TurnRecord) -> None:
+        self._ensure_started()
+        try:
+            self._q.put_nowait(rec)
+        except queue.Full:
+            _incr("turns_dropped")
+            log.warning("transcripts: write queue full (max=%s) — dropped turn %s",
+                        self._q.maxsize, rec.id)
+
+    def _loop(self) -> None:
+        while True:
+            rec = self._q.get()
+            try:
+                if rec is None:  # shutdown sentinel (unused; the thread is a daemon)
+                    return
+                try:
+                    _with_retry(lambda: get_store().record_turn(rec), what="record_turn")
+                    _incr("turns_written")
+                except Exception as exc:  # noqa: BLE001
+                    _incr("turns_dropped")
+                    log.warning("transcripts: dropped turn %s after retries (%s: %s)",
+                                rec.id, type(exc).__name__, exc)
+            finally:
+                self._q.task_done()
+
+    def flush(self, timeout: float) -> int:
+        """Best-effort: wait up to `timeout`s for queued writes to drain. Returns the number
+        still pending (0 if fully flushed)."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while self._q.unfinished_tasks > 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return self._q.unfinished_tasks
+
+
+_writer: Optional[_TurnWriter] = None
+_writer_lock = threading.Lock()
+
+
+def _get_writer() -> _TurnWriter:
+    global _writer
+    if _writer is None:
+        with _writer_lock:
+            if _writer is None:
+                _writer = _TurnWriter(_int_env("AGENTS_TRANSCRIPT_QUEUE_MAX", 1000))
+    return _writer
+
+
 def safe_record_turn(rec: TurnRecord) -> None:
-    """Persist a turn; never raise into the request/background path."""
+    """Enqueue a turn for durable, retried, off-request-path persistence (#41). Returns
+    immediately and never raises into the caller; the write (with backoff) runs on the writer
+    thread and is drained on graceful shutdown via flush_pending()."""
     try:
-        get_store().record_turn(rec)
+        _get_writer().submit(rec)
     except Exception:  # noqa: BLE001
-        log.exception("transcripts: failed to record turn %s", rec.id)
+        _incr("turns_dropped")
+        log.exception("transcripts: failed to enqueue turn %s", rec.id)
+
+
+def flush_pending(timeout: float = 5.0) -> int:
+    """Give queued transcript writes a chance to complete on graceful shutdown (#41). No-op
+    if nothing was ever enqueued. Returns the number still pending after `timeout`."""
+    if _writer is None:
+        return 0
+    pending = _get_writer().flush(timeout)
+    if pending:
+        log.warning("transcripts: %d queued turn(s) still pending after %.1fs flush", pending, timeout)
+    return pending
 
 
 def safe_record_feedback(turn_id: str, fb: Feedback) -> bool:
+    """Record feedback synchronously (the endpoint returns whether the turn was found),
+    retrying transient failures. Never raises; a final failure is counted + logged."""
     try:
-        return get_store().record_feedback(turn_id, fb)
+        return bool(_with_retry(lambda: get_store().record_feedback(turn_id, fb), what="record_feedback"))
     except Exception:  # noqa: BLE001
-        log.exception("transcripts: failed to record feedback for %s", turn_id)
+        _incr("feedback_dropped")
+        log.warning("transcripts: failed to record feedback for %s after retries", turn_id)
         return False
 
 

@@ -10,7 +10,7 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
 from ...core import llm
@@ -55,7 +55,7 @@ class EmailAgent(Agent):
         router = APIRouter(tags=["email"])
 
         @router.post("/chat", response_model=ChatResponse)
-        def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
+        def chat(req: ChatRequest, request: Request) -> ChatResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
@@ -107,7 +107,7 @@ class EmailAgent(Agent):
             changed = out_doc != current
             title = req.title or doc.subject or "Untitled email"
             # Persist off the response path so it adds no latency to the user's turn.
-            background.add_task(_record, out_doc, changed, None)
+            _record(out_doc, changed, None)  # enqueue durably (#41); off-path writer thread
             return ChatResponse(
                 doc=out_doc,
                 title=title,

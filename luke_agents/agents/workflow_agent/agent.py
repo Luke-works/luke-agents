@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
 from ...core import llm
@@ -41,7 +41,7 @@ class WorkflowAgent(Agent):
         router = APIRouter(tags=["workflow"])
 
         @router.post("/chat", response_model=ChatResponse)
-        def chat(req: ChatRequest, request: Request, background: BackgroundTasks) -> ChatResponse:
+        def chat(req: ChatRequest, request: Request) -> ChatResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
@@ -85,7 +85,7 @@ class WorkflowAgent(Agent):
             current = dump_doc(repair_doc(WorkflowDocModel.model_validate(req.doc))) if req.doc else None
             changed = out_doc != current
             title = req.title or doc.name or "Untitled workflow"
-            background.add_task(_record, out_doc, changed, None)
+            _record(out_doc, changed, None)  # enqueue durably (#41); off-path writer thread
             return ChatResponse(
                 doc=out_doc,
                 title=title,
