@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from .auth import require_api_key
@@ -100,6 +101,37 @@ def assert_prod_hardened() -> None:
         )
 
 
+def _install_curated_openapi(app: FastAPI, title: str, api_version: str) -> None:
+    """Curate the OpenAPI document (#37): a real description, the X-Agents-Key auth scheme, a
+    relative server, and the versioning note — instead of FastAPI's bare default."""
+
+    def custom():
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=title,
+            version="1.0.0",
+            description=(
+                f"LukeTalks agent fleet. The canonical API is versioned under `/{api_version}` "
+                f"(e.g. `/{api_version}/agents/<slug>/chat`). Legacy unversioned paths "
+                "(`/agents/<slug>/...` and the default agent mounted at the root, e.g. `/chat`) "
+                "remain for drop-in compatibility and are hidden from this schema. Send the "
+                "`X-Agents-Key` header when the server sets `AGENTS_API_KEY`."
+            ),
+            routes=app.routes,
+        )
+        schema.setdefault("components", {}).setdefault("securitySchemes", {})["AgentsApiKey"] = {
+            "type": "apiKey", "in": "header", "name": "X-Agents-Key",
+            "description": "Required when AGENTS_API_KEY is configured on the server.",
+        }
+        schema["security"] = [{"AgentsApiKey": []}]
+        schema["servers"] = [{"url": "/", "description": "this instance"}]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom
+
+
 def build_app(agents: list[Agent], *, default_slug: str | None = None, title: str = "luke-agents") -> FastAPI:
     assert_prod_hardened()  # fail-fast before wiring anything if prod posture is unsafe
     if not agents:
@@ -132,7 +164,10 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
             except Exception:  # noqa: BLE001
                 log.exception("transcripts: flush on shutdown failed")
 
-    app = FastAPI(title=title, version="0.1.0", lifespan=lifespan)
+    # #37: the API is versioned under /v1 (canonical); the app version reflects the API contract,
+    # not a stale 0.1.0. Legacy unversioned paths remain for drop-in compatibility.
+    api_version = "v1"
+    app = FastAPI(title=title, version="1.0.0", lifespan=lifespan)
 
     # Correlation id first (outermost): added AFTER CORS so it wraps it and every
     # request thread has the id set before any handler/log runs.
@@ -196,16 +231,24 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
     # route uniformly — including any added later (#32). /health and / are declared
     # on the app above (outside any router) and stay open by design.
     for agent in agents:
-        prefix = f"/agents/{agent.meta.slug}"
-        app.include_router(
-            agent.build_router(), prefix=prefix, dependencies=[Depends(require_api_key)]
-        )
-        _mount_static(app, agent, prefix)
+        gate = [Depends(require_api_key)]
+        # #37: canonical VERSIONED mount (documented in OpenAPI).
+        v1_prefix = f"/{api_version}/agents/{agent.meta.slug}"
+        app.include_router(agent.build_router(), prefix=v1_prefix, dependencies=gate,
+                           tags=[agent.meta.slug])
+        _mount_static(app, agent, v1_prefix)
+        # Legacy UNVERSIONED mount — kept working for existing clients, hidden from the curated
+        # schema so /v1 is the one documented surface (deprecation path).
+        legacy_prefix = f"/agents/{agent.meta.slug}"
+        app.include_router(agent.build_router(), prefix=legacy_prefix, dependencies=gate,
+                           include_in_schema=False)
+        _mount_static(app, agent, legacy_prefix)
 
-    # Default agent also at root for drop-in single-agent compatibility.
-    app.include_router(
-        default.build_router(), prefix="", dependencies=[Depends(require_api_key)]
-    )
+    # Default agent also at the root for drop-in single-agent compatibility (documented).
+    app.include_router(default.build_router(), prefix="", dependencies=[Depends(require_api_key)],
+                       tags=[default.meta.slug])
+
+    _install_curated_openapi(app, title, api_version)
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index() -> str:
