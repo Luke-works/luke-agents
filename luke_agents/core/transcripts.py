@@ -195,6 +195,21 @@ class Feedback:
     note: Optional[str] = None
 
 
+@dataclass
+class AuditRecord:
+    """One append-only audit entry for a sensitive action (#40): a training-corpus export
+    or a turn label change. The `actor` is a VERIFIED principal (the gateway-set tenant, or
+    an authenticated operator) — never a client-supplied field."""
+    id: str
+    actor: str
+    action: str  # e.g. "feedback.label", "finetune.export", "tenant.delete"
+    target: Optional[str] = None       # the thing acted on (turn id, tenant, output path)
+    scope: Optional[str] = None        # tenant / filter scope
+    request_id: Optional[str] = None   # request correlation id, or a CLI run id
+    details: Optional[dict] = None
+    created_at: str = field(default_factory=_now_iso)
+
+
 # --------------------------------------------------------------------------- #
 # Store implementations
 # --------------------------------------------------------------------------- #
@@ -206,6 +221,12 @@ class TranscriptStore:
     def record_turn(self, rec: TurnRecord) -> None: ...
     def record_feedback(self, turn_id: str, fb: Feedback) -> bool:  # found?
         return False
+
+    def record_audit(self, rec: "AuditRecord") -> None:  # append-only audit (#40)
+        ...
+
+    def list_audit(self, *, action: Optional[str] = None, limit: int = 100) -> list:  # queryable (#40)
+        return []
 
     def delete_tenant(self, tenant_id: str) -> int:  # rows erased (#33)
         return 0
@@ -232,6 +253,7 @@ class JsonlStore(TranscriptStore):
         self.dir = Path(directory)
         self.turns = self.dir / "turns.jsonl"
         self.feedback = self.dir / "feedback.jsonl"
+        self.audit = self.dir / "audit.jsonl"
         self._lock = threading.Lock()
 
     def init(self) -> None:
@@ -253,6 +275,17 @@ class JsonlStore(TranscriptStore):
     def record_feedback(self, turn_id: str, fb: Feedback) -> bool:
         self._append(self.feedback, {"turn_id": turn_id, "at": _now_iso(), **asdict(fb)})
         return True  # append-only can't confirm the turn exists; assume ok
+
+    def record_audit(self, rec: "AuditRecord") -> None:
+        self._append(self.audit, asdict(rec))
+
+    def list_audit(self, *, action: Optional[str] = None, limit: int = 100) -> list:
+        if not self.audit.exists():
+            return []
+        rows = [json.loads(ln) for ln in self.audit.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        if action:
+            rows = [r for r in rows if r.get("action") == action]
+        return rows[-limit:]
 
     def delete_tenant(self, tenant_id: str) -> int:
         """Erase one tenant's turns (and their feedback) — rewrite both files,
@@ -401,6 +434,20 @@ class PostgresStore(TranscriptStore):
             ALTER TABLE {self.schema}.turns ADD COLUMN IF NOT EXISTS tenant_id text;
             CREATE INDEX IF NOT EXISTS turns_tenant_idx
                 ON {self.schema}.turns (tenant_id, agent, created_at);
+            -- #40: append-only audit of sensitive actions (export, label change). Authoritative
+            -- DDL lives in migration 0003; this keeps a first boot working before it runs.
+            CREATE TABLE IF NOT EXISTS {self.schema}.audit_log (
+                id            uuid PRIMARY KEY,
+                at            timestamptz NOT NULL DEFAULT now(),
+                actor         text NOT NULL,
+                action        text NOT NULL,
+                target        text,
+                scope         text,
+                request_id    text,
+                details       jsonb
+            );
+            CREATE INDEX IF NOT EXISTS audit_log_at_idx ON {self.schema}.audit_log (at);
+            CREATE INDEX IF NOT EXISTS audit_log_action_idx ON {self.schema}.audit_log (action, at);
             """
             self._run(lambda cur: cur.execute(ddl))
             self._ready = True
@@ -454,6 +501,40 @@ class PostgresStore(TranscriptStore):
             return cur.rowcount
 
         return bool(self._run(run))
+
+    def record_audit(self, rec: "AuditRecord") -> None:
+        from psycopg2.extras import Json
+
+        if not self._ready:
+            self.init()
+        sql = f"""
+            INSERT INTO {self.schema}.audit_log
+              (id, actor, action, target, scope, request_id, details)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (id) DO NOTHING
+        """
+        params = (rec.id, rec.actor, rec.action, rec.target, rec.scope, rec.request_id, Json(rec.details))
+        self._run(lambda cur: cur.execute(sql, params))
+
+    def list_audit(self, *, action: Optional[str] = None, limit: int = 100) -> list:
+        if not self._ready:
+            self.init()
+        where, params = "", []
+        if action:
+            where = "WHERE action = %s"
+            params.append(action)
+        params.append(max(1, limit))
+        sql = (
+            f"SELECT id, at, actor, action, target, scope, request_id, details "
+            f"FROM {self.schema}.audit_log {where} ORDER BY at DESC LIMIT %s"
+        )
+
+        def run(cur):
+            cur.execute(sql, tuple(params))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        return self._run(run)
 
     def delete_tenant(self, tenant_id: str) -> int:
         if not self._ready:
@@ -695,6 +776,21 @@ def safe_record_feedback(turn_id: str, fb: Feedback) -> bool:
         _incr("feedback_dropped")
         log.warning("transcripts: failed to record feedback for %s after retries", turn_id)
         return False
+
+
+def safe_record_audit(rec: AuditRecord) -> None:
+    """Write an append-only audit entry (#40), retrying transient failures. Never raises into
+    the caller — an audit-store hiccup must not break the feedback request or the export run
+    (the export also keeps its stderr/file trail)."""
+    try:
+        _with_retry(lambda: get_store().record_audit(rec), what="record_audit")
+    except Exception:  # noqa: BLE001
+        log.warning("transcripts: failed to write audit '%s' (%s) after retries", rec.action, rec.id)
+
+
+def list_audit(*, action: Optional[str] = None, limit: int = 100) -> list:
+    """Query recent audit entries (newest first). Ops/compliance read path (#40)."""
+    return get_store().list_audit(action=action, limit=limit)
 
 
 def delete_tenant(tenant_id: str) -> int:

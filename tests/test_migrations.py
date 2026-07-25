@@ -24,11 +24,13 @@ def _load(filename: str):
 def test_revision_chain_is_ordered():
     r1 = _load("0001_initial_turns.py")
     r2 = _load("0002_add_tenant_id.py")
+    r3 = _load("0003_audit_log.py")
     assert r1.revision == "0001_initial_turns"
     assert r1.down_revision is None                 # the base
     assert r2.down_revision == r1.revision          # links onto rev 1 (ordered)
-    # Both directions are defined so the migration is reversible.
-    for mod in (r1, r2):
+    assert r3.down_revision == r2.revision          # rev 3 links onto rev 2
+    # Both directions are defined so each migration is reversible.
+    for mod in (r1, r2, r3):
         assert callable(mod.upgrade) and callable(mod.downgrade)
 
 

@@ -14,7 +14,10 @@ from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
-from ...core.transcripts import Feedback, TurnRecord, safe_record_feedback, safe_record_turn
+from ...core.observability import correlation_id_var
+from ...core.transcripts import (
+    AuditRecord, Feedback, TurnRecord, safe_record_audit, safe_record_feedback, safe_record_turn,
+)
 from .coltorapps import schema_to_spec, spec_to_schema
 from .ops import UnsupportedOperation, apply_operations
 from .prompt import OUTBOUND_GUIDANCE, SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
@@ -160,10 +163,19 @@ class FormAgent(Agent):
         def feedback(req: FeedbackRequest, request: Request) -> dict:
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
             only good training examples. Safe no-op if transcripts are disabled."""
-            enforce(_rate_key(request, resolve_tenant(request)))  # bound writes (was unauthenticated + unthrottled)
+            tenant = resolve_tenant(request)
+            enforce(_rate_key(request, tenant))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)
             )
+            # #40: audit the label change against the VERIFIED principal (the gateway-set
+            # tenant), never the client-supplied user_id. Best-effort; never breaks the request.
+            safe_record_audit(AuditRecord(
+                id=str(uuid.uuid4()), actor=f"tenant:{tenant}", action="feedback.label",
+                target=req.turn_id, scope=tenant, request_id=correlation_id_var.get(),
+                details={"accepted": req.accepted, "rating": req.rating,
+                         "has_note": bool(req.note), "found": found},
+            ))
             return {"ok": True, "found": found}
 
         return router

@@ -24,14 +24,46 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hmac
 import json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 log = logging.getLogger("luke_agents.export_finetune")
+
+_RUN_ID: Optional[str] = None
+
+
+def _run_id() -> str:
+    """A stable per-process id so every audit row from one export run shares a request id."""
+    global _RUN_ID
+    if _RUN_ID is None:
+        _RUN_ID = str(uuid.uuid4())
+    return _RUN_ID
+
+
+def _require_operator(provided_token: Optional[str]) -> str:
+    """Gate export / erasure behind an operator credential (#40) and return the operator identity
+    for the audit trail. Default-lenient: when AGENTS_OPERATOR_TOKEN is unset (dev), it runs with a
+    WARNING; when set, a matching --operator-token is required or the run is refused."""
+    actor = os.getenv("AGENTS_ACTOR") or _current_user()
+    expected = os.getenv("AGENTS_OPERATOR_TOKEN", "").strip()
+    if not expected:
+        log.warning("export running WITHOUT operator auth (AGENTS_OPERATOR_TOKEN unset) — dev/local only")
+        return actor
+    provided = (provided_token or "").strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        print(
+            "Refusing to run: exporting/erasing user-derived training data requires an operator "
+            "credential. Pass --operator-token matching AGENTS_OPERATOR_TOKEN.",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    return actor
 
 
 def _audit_export(**fields) -> None:
@@ -54,6 +86,22 @@ def _audit_export(**fields) -> None:
                 f.write(line + "\n")
         except OSError as exc:  # audit must not silently vanish, but must not block the export
             print(f"audit: WARNING could not write {path}: {exc}", file=sys.stderr)
+    # #40: also write a durable, queryable, append-only audit row to the transcript store
+    # (Postgres audit_log, or dev JSONL). Best-effort — the stderr/file trail above stands
+    # regardless, and an audit-store hiccup must never break the export.
+    try:
+        from ..core.transcripts import AuditRecord, safe_record_audit
+        safe_record_audit(AuditRecord(
+            id=str(uuid.uuid4()),
+            actor=str(rec.get("actor")),
+            action="finetune." + str(fields.get("action", "export")),
+            target=fields.get("out") or fields.get("tenant"),
+            scope=fields.get("tenant"),
+            request_id=_run_id(),
+            details=fields,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"audit: WARNING could not write durable audit row: {exc}", file=sys.stderr)
 
 
 def _current_user() -> str:
@@ -232,7 +280,13 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--since", default=None, metavar="ISO", help="only turns with created_at >= this ISO timestamp")
     p.add_argument("--until", default=None, metavar="ISO", help="only turns with created_at <= this ISO timestamp")
     p.add_argument("--limit", type=int, default=None, help="stop after reading N turns (bounds a run)")
+    p.add_argument("--operator-token", default=None, metavar="TOKEN",
+                   help="operator credential; required when AGENTS_OPERATOR_TOKEN is set (#40)")
     args = p.parse_args(argv)
+
+    # #40: gate this credential-worthy action (it reads/erases user-derived data) behind an
+    # operator token, and capture the operator as the verified actor for the audit trail.
+    _require_operator(args.operator_token)
 
     if args.delete_tenant:
         from ..core.transcripts import delete_tenant
