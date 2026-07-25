@@ -363,7 +363,10 @@ class PostgresStore(TranscriptStore):
         return self._pool
 
     def init(self) -> None:
-        # Idempotent: create schema + table if missing. Safe to call repeatedly.
+        # Idempotent runtime safety-net: create schema + table if missing. The AUTHORITATIVE,
+        # versioned schema lives in Alembic migrations (migrations/, run as a pre-deploy step,
+        # #31); this keeps a Postgres-backed dev box or a first boot working before/without a
+        # separate `alembic upgrade head`. Both use IF NOT EXISTS and converge on the same shape.
         with self._init_lock:
             if self._ready:
                 return

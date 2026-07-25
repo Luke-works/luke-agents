@@ -4,6 +4,10 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
+    # #31: run transcript-schema migrations as an explicit pre-deploy step (not lazily on
+    # first request). No-op when DATABASE_URL is unset (dev/JSONL), so this never blocks a
+    # non-Postgres deploy.
+    preDeployCommand: sh -c '[ -n "$DATABASE_URL" ] && alembic upgrade head || echo "transcripts: DATABASE_URL unset — skipping migrations"'
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       # Pin Python to a version with prebuilt wheels for our deps. 3.14 has no

@@ -35,3 +35,41 @@ jobs:
         # 'python -m pytest' puts the repo root on sys.path so `import luke_agents`
         # resolves. pytest also imports the app modules, so broken wiring fails here.
         run: python -m pytest -q
+
+  migrations:
+    name: Migrations apply cleanly (Postgres)
+    runs-on: ubuntu-latest
+    # #31: prove the transcript-schema migrations apply, reverse, and re-apply against a
+    # real Postgres — the schema is no longer created by ad-hoc inline DDL alone.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: luke
+          POSTGRES_PASSWORD: luke
+          POSTGRES_DB: luke_agents
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U luke"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://luke:luke@localhost:5432/luke_agents
+      AGENTS_DB_SCHEMA: luke_agents
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Apply migrations (upgrade head)
+        run: alembic upgrade head
+      - name: Reversible (downgrade to base, then upgrade again)
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+      - name: Idempotent (re-running head is a clean no-op)
+        run: alembic upgrade head
