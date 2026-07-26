@@ -16,7 +16,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
@@ -203,6 +203,20 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
                  "version": a.meta.version, "path": f"/agents/{a.meta.slug}"}
                 for a in agents
             ],
+        }
+
+    @app.get("/debug/whoami", include_in_schema=False)
+    def _debug_whoami(request: Request) -> dict:
+        # TEMPORARY (remove after X-Forwarded-For hop verification). Read-only echo of the
+        # forwarding headers so we can count how many reverse-proxy hops Render adds in front of
+        # this service — used to set AGENTS_TRUSTED_PROXY_HOPS correctly. No secrets, no side effects.
+        xff = request.headers.get("x-forwarded-for")
+        hops = [h.strip() for h in xff.split(",")] if xff else []
+        return {
+            "x_forwarded_for": xff,
+            "hops": hops,
+            "hop_count": len(hops),
+            "direct_peer": request.client.host if request.client else None,
         }
 
     @app.get("/health/ready")
