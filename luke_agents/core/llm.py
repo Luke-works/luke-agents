@@ -18,9 +18,53 @@ import logging
 import os
 import threading
 import time
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TypeVar
 
 from pydantic import BaseModel
+
+
+@dataclass(frozen=True)
+class Usage:
+    """LLM token usage for one generate() turn."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+# Token usage from the most recent generate() in this request context, for the caller (e.g. the
+# transcript recorder) to read without threading it through the typed return value. ContextVar keeps
+# it async/request-safe.
+_LAST_USAGE: ContextVar[Usage | None] = ContextVar("_last_usage", default=None)
+
+
+def last_usage() -> Usage | None:
+    """Token usage from the most recent generate() in this request context (None if unknown)."""
+    return _LAST_USAGE.get()
+
+
+def _note_usage(brain: str, model: str, prompt_tokens: object, completion_tokens: object) -> None:
+    """Record LLM token usage for the turn: expose it via last_usage() AND count it in Prometheus.
+    Best-effort — a provider may omit usage, and accounting must NEVER break a turn."""
+    try:
+        usage = Usage(prompt_tokens=int(prompt_tokens or 0), completion_tokens=int(completion_tokens or 0))
+    except (TypeError, ValueError):
+        usage = Usage()
+    _LAST_USAGE.set(usage)
+    try:
+        from .metrics import TOKENS  # lazy import avoids any load-time import cycle
+
+        if usage.prompt_tokens:
+            TOKENS.labels(brain, model, "prompt").inc(usage.prompt_tokens)
+        if usage.completion_tokens:
+            TOKENS.labels(brain, model, "completion").inc(usage.completion_tokens)
+    except Exception:  # noqa: BLE001
+        pass  # metrics unavailable / label error — never fail the turn
 
 log = logging.getLogger("luke_agents.llm")
 
@@ -243,6 +287,8 @@ def _groq(system: str, user: str, response_model: type[T], temperature: float, m
                 response_format={"type": "json_object"},
                 temperature=temperature,
             )
+            _u = getattr(resp, "usage", None)
+            _note_usage("groq", model, getattr(_u, "prompt_tokens", None), getattr(_u, "completion_tokens", None))
             return response_model.model_validate_json(resp.choices[0].message.content)
         except Exception as exc:  # noqa: BLE001 - try the next model
             last_err = exc
@@ -279,6 +325,8 @@ def _openai(system: str, user: str, response_model: type[T], model: str | None =
         completion = client.beta.chat.completions.parse(**kwargs)
 
     msg = completion.choices[0].message
+    _u = getattr(completion, "usage", None)
+    _note_usage("openai", kwargs["model"], getattr(_u, "prompt_tokens", None), getattr(_u, "completion_tokens", None))
     parsed = getattr(msg, "parsed", None)
     if parsed is not None:
         return parsed
@@ -304,6 +352,9 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float,
             temperature=temperature,
         ),
     )
+    _u = getattr(resp, "usage_metadata", None)
+    _note_usage("gemini", model or GEMINI_MODEL,
+                getattr(_u, "prompt_token_count", None), getattr(_u, "candidates_token_count", None))
     return response_model.model_validate_json(resp.text)
 
 
@@ -319,4 +370,6 @@ def _ollama(system: str, user: str, response_model: type[T], temperature: float,
         format=response_model.model_json_schema(),  # forces schema-shaped JSON
         options={"temperature": temperature},
     )
+    _get = resp.get if hasattr(resp, "get") else (lambda k, r=resp: getattr(r, k, None))
+    _note_usage("ollama", model or OLLAMA_MODEL, _get("prompt_eval_count"), _get("eval_count"))
     return response_model.model_validate_json(resp["message"]["content"])

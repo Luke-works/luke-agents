@@ -27,6 +27,13 @@ LATENCY = Histogram(
     "agents_request_latency_seconds", "Request handling latency in seconds, by route.",
     ["route"], registry=REGISTRY,
 )
+# The fleet's PRIMARY cost signal: LLM tokens consumed, split by brain/model and prompt vs
+# completion. Bounded cardinality (a few brains x models x 2 types) — deliberately NOT per-tenant
+# (that would explode series); per-tenant spend belongs in the durable transcript store instead.
+TOKENS = Counter(
+    "agents_llm_tokens_total", "LLM tokens consumed, by brain/model and type (prompt|completion).",
+    ["brain", "model", "type"], registry=REGISTRY,
+)
 
 
 class _TranscriptCollector:
