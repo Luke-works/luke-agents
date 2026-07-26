@@ -36,8 +36,21 @@ def test_request_counter_increments_per_request(monkeypatch, tmp_path):
 
 def test_rate_limit_and_error_statuses_are_visible(monkeypatch, tmp_path):
     # A 404 (or any status) is recorded with its status label, so rate-limit 429s / LLM 502s show up.
+    # Unmatched paths collapse to the "unmatched" route bucket (bounded cardinality — see below).
     client = _client(monkeypatch, tmp_path)
-    before = M.REQUESTS.labels("GET", "/nope", "404")._value.get()
+    before = M.REQUESTS.labels("GET", "unmatched", "404")._value.get()
     client.get("/nope")
-    after = M.REQUESTS.labels("GET", "/nope", "404")._value.get()
+    after = M.REQUESTS.labels("GET", "unmatched", "404")._value.get()
     assert after == before + 1
+
+
+def test_unmatched_paths_do_not_explode_label_cardinality(monkeypatch, tmp_path):
+    # The route label must be the matched TEMPLATE, never the raw path — otherwise an attacker
+    # hitting /aaa, /aab, … mints one metric series per URL (a scrape/memory DoS).
+    client = _client(monkeypatch, tmp_path)
+    for p in ("/zzz-1", "/zzz-2", "/zzz-3", "/deep/random/path"):
+        client.get(p)  # all 404
+    body = client.get("/metrics").text
+    assert 'route="unmatched"' in body
+    for p in ("/zzz-1", "/zzz-2", "/zzz-3", "/deep/random/path"):
+        assert f'route="{p}"' not in body  # no per-path series

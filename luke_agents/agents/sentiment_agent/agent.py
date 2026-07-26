@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
 from ...core import llm
+from ...core.errors import brain_http_error
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from .intake import aggregate, chunk_text, excerpt, normalize_email, normalize_form
@@ -83,16 +84,13 @@ def _rate_key(request: Request, tenant: str) -> str:
 
 
 def _map_brain_error(exc: Exception) -> HTTPException:
-    """Map an LLM/brain failure to a user-friendly HTTP error (mirrors the other agents)."""
-    status = getattr(exc, "status_code", None)
-    text = str(exc).lower()
-    if status == 429 or "rate limit" in text or "429" in text:
-        return HTTPException(
-            status_code=429,
-            detail="Sentiment analysis is getting a lot of requests right now. "
-            "Please wait a few seconds and try again.",
-        )
-    return HTTPException(status_code=502, detail=f"brain error: {exc}")
+    """Map an LLM/brain failure to a client-safe HTTP error via the shared helper (never leaks
+    the raw provider exception; preserves the sentiment-specific busy message)."""
+    return brain_http_error(
+        exc,
+        busy_message="Sentiment analysis is getting a lot of requests right now. "
+        "Please wait a few seconds and try again.",
+    )
 
 
 def _analyze_doc_sections(chunks: list[str], model: str | None) -> list[SentimentAnalysis]:

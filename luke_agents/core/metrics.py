@@ -76,7 +76,11 @@ class MetricsMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
-            route = scope.get("path", "unknown")
+            # Label by the MATCHED route TEMPLATE (e.g. "/v1/agents/{slug}/chat"), not the raw path.
+            # Starlette sets scope["route"] during routing; using the raw path would let an attacker
+            # mint an unbounded number of label series (one per URL hit, incl. 404s) — a scrape/mem DoS.
+            matched = scope.get("route")
+            route = getattr(matched, "path", None) or "unmatched"
             method = scope.get("method", "GET")
             REQUESTS.labels(method, route, str(status_holder["code"])).inc()
             LATENCY.labels(route).observe(time.perf_counter() - start)

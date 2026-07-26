@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
 from ...core import llm
+from ...core.errors import brain_http_error
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from ...core.transcripts import TurnRecord, safe_record_turn
@@ -75,7 +76,7 @@ class WorkflowAgent(Agent):
                         detail="LukeFlow is getting a lot of requests right now. "
                         "Please wait a few seconds and try again.",
                     ) from exc
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise brain_http_error(exc) from exc
 
             # Repair dangling references so the UI always gets a wireable graph.
             doc = repair_doc(doc)

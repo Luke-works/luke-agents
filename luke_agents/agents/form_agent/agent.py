@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
 from ...core import llm
+from ...core.errors import brain_http_error
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from ...core.observability import correlation_id_var
@@ -109,7 +110,7 @@ class FormAgent(Agent):
                         detail="LukeBuilds is getting a lot of requests right now. "
                         "Please wait a few seconds and try again.",
                     ) from exc
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise brain_http_error(exc) from exc
 
             # A LIFECYCLE action (check in / publish / undo) is NOT a field edit — ignore any
             # operations the model may have included and leave the form untouched; the app runs
@@ -155,7 +156,7 @@ class FormAgent(Agent):
                     TESTDATA_SYSTEM, build_testdata_message(spec, req.mode, count), TestDataTurn, temperature=0.6
                 )
             except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=502, detail=f"brain error: {exc}") from exc
+                raise brain_http_error(exc) from exc
             datasets = turn.datasets[:count] or [TestDataItem()]
             return TestDataResponse(datasets=datasets, brain=llm.active_brain())
 
