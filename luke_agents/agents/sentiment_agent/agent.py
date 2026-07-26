@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.errors import brain_http_error
+from ...core.net import client_ip
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from .intake import aggregate, chunk_text, excerpt, normalize_email, normalize_form
@@ -78,9 +79,7 @@ def _rate_key(request: Request, tenant: str) -> str:
     """Budget key bound to tenant + originating IP (Render sets X-Forwarded-For),
     namespaced to this agent. Deliberately NOT keyed by the client-supplied
     user_id, which is unauthenticated and could be rotated to mint fresh budget."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-    return f"sentiment:t:{tenant}:ip:{ip}"
+    return f"sentiment:t:{tenant}:ip:{client_ip(request)}"
 
 
 def _map_brain_error(exc: Exception) -> HTTPException:

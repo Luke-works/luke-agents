@@ -35,8 +35,22 @@ def test_rate_key_is_ip_based():
     assert _rate_key(_Req(host="9.9.9.9"), "acme") == "form:t:acme:ip:9.9.9.9"
 
 
-def test_rate_key_prefers_forwarded_for():
-    r = _Req(headers={"x-forwarded-for": "203.0.113.5, 10.0.0.1"}, host="10.0.0.1")
+def test_rate_key_uses_trusted_hop_from_right_not_spoofable_leftmost(monkeypatch):
+    # Default 2 trusted hops (Cloudflare + Render, verified against the deployed service). A caller
+    # who PREPENDS a fake X-Forwarded-For must not change its bucket — the real client is the 2nd
+    # entry from the right. Chain as the app sees it: [spoofed, REAL-CLIENT, cloudflare].
+    monkeypatch.delenv("AGENTS_TRUSTED_PROXY_HOPS", raising=False)  # use the default (2)
+    r = _Req(headers={"x-forwarded-for": "6.6.6.6, 203.0.113.5, 172.70.0.1"}, host="6.6.6.6")
+    assert _rate_key(r, "acme") == "form:t:acme:ip:203.0.113.5"
+    # Rotating only the spoofed leftmost yields the SAME bucket — the AI-spend bypass is closed.
+    r2 = _Req(headers={"x-forwarded-for": "9.9.9.9, 203.0.113.5, 172.70.0.1"}, host="9.9.9.9")
+    assert _rate_key(r2, "acme") == _rate_key(r, "acme")
+
+
+def test_rate_key_trusted_hops_is_configurable(monkeypatch):
+    # A single-hop / legacy deployment can opt back to the (spoofable) leftmost with 0.
+    monkeypatch.setenv("AGENTS_TRUSTED_PROXY_HOPS", "0")
+    r = _Req(headers={"x-forwarded-for": "203.0.113.5, 10.0.0.1"})
     assert _rate_key(r, "acme") == "form:t:acme:ip:203.0.113.5"
 
 

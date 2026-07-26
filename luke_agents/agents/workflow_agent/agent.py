@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.errors import brain_http_error
+from ...core.net import client_ip
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from ...core.transcripts import TurnRecord, safe_record_turn
@@ -25,9 +26,7 @@ from .schema import ChatRequest, ChatResponse, WorkflowDocModel
 def _rate_key(request: Request, tenant: str) -> str:
     """Budget key bound to the tenant + originating IP (mirrors the email agent):
     namespaced by tenant then IP, never by the unauthenticated client user_id."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-    return f"workflow:t:{tenant}:ip:{ip}"
+    return f"workflow:t:{tenant}:ip:{client_ip(request)}"
 
 
 class WorkflowAgent(Agent):

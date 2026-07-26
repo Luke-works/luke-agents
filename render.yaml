@@ -41,6 +41,13 @@ services:
         value: "200"
       - key: RATE_LIMIT_WINDOW_SECONDS
         value: "10800"
+      # Reverse-proxy hops in front of this service, for spoof-resistant client-IP resolution
+      # (the rate-limit key). VERIFIED = 2: Cloudflare sits in front of Render and each appends one
+      # X-Forwarded-For entry, so the real client is the 2nd entry from the right. Without this a
+      # caller could rotate a fake leftmost X-Forwarded-For to mint a fresh AI budget per request.
+      # Set 0 for a single-hop / local deployment (legacy leftmost).
+      - key: AGENTS_TRUSTED_PROXY_HOPS
+        value: "2"
       # Shared rate-limit store (#27). REQUIRED for any multi-worker / multi-instance
       # run: without it the window is per-worker and the effective cap is multiplied
       # (and resets on every redeploy). Point at a Render Key Value (Redis) instance.

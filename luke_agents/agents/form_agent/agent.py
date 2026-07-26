@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ...core import Agent, AgentMeta
 from ...core import llm
 from ...core.errors import brain_http_error
+from ...core.net import client_ip
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
 from ...core.observability import correlation_id_var
@@ -44,9 +45,7 @@ def _rate_key(request: Request, tenant: str) -> str:
     unauthenticated and a caller could rotate it per request to mint a fresh budget
     and drive unbounded AI spend. Namespaced by agent slug so each agent has its own
     budget."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "anon")
-    return f"form:t:{tenant}:ip:{ip}"
+    return f"form:t:{tenant}:ip:{client_ip(request)}"
 
 
 class FormAgent(Agent):
