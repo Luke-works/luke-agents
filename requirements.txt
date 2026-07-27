@@ -10,7 +10,7 @@ python-dotenv==1.2.2     # 1.0.1 had PYSEC-2026-2270; 1.2.2 patched it (D7).
 psycopg2-binary==2.9.10   # transcript store (only used when DATABASE_URL is set)
 alembic==1.14.1           # versioned DB migrations for the transcript schema (#31)
 redis==5.2.1              # shared rate-limit store (only used when REDIS_URL is set; #27)
-prometheus-client==0.21.1 # Prometheus metrics exposed at GET /metrics (#22)
+prometheus-client==0.26.0 # Prometheus metrics exposed at GET /metrics (#22)
 # Optional alternative brains:
 # google-genai==0.8.0   # Gemini (blocked for managed domains)
 # ollama==0.4.5         # local model for dev (not usable on Render free tier)
