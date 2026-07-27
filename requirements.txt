@@ -2,8 +2,11 @@ fastapi==0.116.2
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 groq==0.13.1
-openai>=1.99.0            # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set
-python-dotenv==1.0.1
+openai==2.48.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set. Pinned
+                         # (was >=1.99.0): an unpinned floor lets a future release silently break the
+                         # build/behavior with no code change — supply-chain risk (D7). This freezes
+                         # the version CI already resolves. Bump deliberately + re-run tests.
+python-dotenv==1.2.2     # 1.0.1 had PYSEC-2026-2270; 1.2.2 patched it (D7).
 psycopg2-binary==2.9.10   # transcript store (only used when DATABASE_URL is set)
 alembic==1.14.1           # versioned DB migrations for the transcript schema (#31)
 redis==5.2.1              # shared rate-limit store (only used when REDIS_URL is set; #27)
