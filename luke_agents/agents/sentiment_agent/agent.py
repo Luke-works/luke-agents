@@ -25,6 +25,7 @@ from ...core.errors import brain_http_error
 from ...core.net import client_ip
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
+from ...core import tokenbudget
 from .intake import aggregate, chunk_text, excerpt, normalize_email, normalize_form
 from .prompt import (
     BATCH_SYSTEM,
@@ -133,6 +134,7 @@ class SentimentAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before the (paid) LLM call.
             enforce(_rate_key(request, tenant))
+            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
 
             model = _model_override()
             try:
@@ -163,6 +165,7 @@ class SentimentAgent(Agent):
                 )
             # One LLM call regardless of item count -> one budget unit.
             enforce(_rate_key(request, tenant))
+            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
 
             model = _model_override()
             try:
@@ -203,6 +206,7 @@ class SentimentAgent(Agent):
             # One LLM call for forms/emails/short docs; long docs do one batch call
             # over their sections (bounded by the doc cap) -> still one budget unit.
             enforce(_rate_key(request, tenant))
+            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
 
             model = _model_override()
             brain = llm.active_brain()

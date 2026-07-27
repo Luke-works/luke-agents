@@ -16,6 +16,7 @@ from ...core.errors import brain_http_error
 from ...core.net import client_ip
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
+from ...core import tokenbudget
 from ...core.observability import correlation_id_var
 from ...core.transcripts import (
     AuditRecord, Feedback, TurnRecord, safe_record_audit, safe_record_feedback, safe_record_turn,
@@ -68,6 +69,8 @@ class FormAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
+            # Per-tenant DAILY token cap (D5): reject if this org already hit today's ceiling.
+            tokenbudget.enforce(tenant)
 
             # Project the incoming coltorapps schema to a flat spec, keeping the
             # bits we must not lose so the rebuild can merge instead of clobber.
@@ -145,7 +148,9 @@ class FormAgent(Agent):
         def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
             """Generate valid (should pass) or invalid (should be rejected) test data
             for the current form, to drive the builder's Test runs."""
-            enforce(_rate_key(request, resolve_tenant(request)))
+            tenant = resolve_tenant(request)
+            enforce(_rate_key(request, tenant))
+            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title

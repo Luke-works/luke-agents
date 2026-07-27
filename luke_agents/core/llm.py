@@ -65,6 +65,14 @@ def _note_usage(brain: str, model: str, prompt_tokens: object, completion_tokens
             TOKENS.labels(brain, model, "completion").inc(usage.completion_tokens)
     except Exception:  # noqa: BLE001
         pass  # metrics unavailable / label error — never fail the turn
+    try:
+        from .tokenbudget import record_current  # lazy: avoids any load-time import cycle
+
+        # Charge this turn's tokens to the request's tenant (D5). Sums across multi-call turns;
+        # no-op unless a per-tenant daily cap is armed. Best-effort — never fails the turn.
+        record_current(usage.total_tokens)
+    except Exception:  # noqa: BLE001
+        pass
 
 log = logging.getLogger("luke_agents.llm")
 

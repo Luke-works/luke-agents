@@ -48,6 +48,13 @@ services:
       # Set 0 for a single-hop / local deployment (legacy leftmost).
       - key: AGENTS_TRUSTED_PROXY_HOPS
         value: "2"
+      # Per-tenant DAILY token cap (D5): a spend ceiling on top of the rate limit. Caps how many
+      # LLM tokens ONE tenant burns per UTC day (a tenant spread across many IPs/users can stay
+      # under every per-caller limit yet run up unbounded spend). OFF unless set to a positive
+      # integer — sync:false so it stays off until an operator arms it in the dashboard. Suggested
+      # 1000000 (~$9/mo worst-case per tenant on the default model). Needs REDIS_URL for a GLOBAL cap.
+      - key: AGENTS_TENANT_DAILY_TOKEN_CAP
+        sync: false
       # Shared rate-limit store (#27). REQUIRED for any multi-worker / multi-instance
       # run: without it the window is per-worker and the effective cap is multiplied
       # (and resets on every redeploy). Point at a Render Key Value (Redis) instance.

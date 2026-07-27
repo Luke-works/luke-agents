@@ -17,6 +17,7 @@ from ...core.errors import brain_http_error
 from ...core.net import client_ip
 from ...core.ratelimit import enforce
 from ...core.tenancy import resolve_tenant
+from ...core import tokenbudget
 from ...core.transcripts import TurnRecord, safe_record_turn
 from .ops import derive_reply, derive_suggestions, dump_doc, repair_doc
 from .prompt import SYSTEM, build_user_message, compact_doc
@@ -46,6 +47,7 @@ class WorkflowAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
+            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
 
             user_msg = build_user_message(compact_doc(req.doc), req.message, req.catalog)
             messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_msg}]
