@@ -3,6 +3,8 @@ version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
+    # Service deploys from develop, not main — open bump PRs there or they never ship (deploy drift).
+    target-branch: "develop"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -10,6 +12,8 @@ updates:
       - dependencies
   - package-ecosystem: github-actions
     directory: "/"
+    # Service deploys from develop, not main — open bump PRs there or they never ship (deploy drift).
+    target-branch: "develop"
     schedule:
       interval: weekly
     labels:
