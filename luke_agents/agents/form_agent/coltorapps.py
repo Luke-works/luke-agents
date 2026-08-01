@@ -22,6 +22,8 @@ top-level entities are kept after the simple fields in `root`.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 import uuid
 
 from .schema import CHOICE_TYPES, FormSpec, SpecField
@@ -49,6 +51,73 @@ PLACEHOLDER_TYPES = {
 # `button` is the odd one out: its attributes are only label/key/class/hidden/
 # disabled — no `required`, `placeholder`, or `options`.
 NO_REQUIRED_TYPES = {"button"}
+
+
+# ── Data-key safety ───────────────────────────────────────────────────────────
+# form-core validates every submission key against this exact identifier rule and rejects
+# violations as ERRORS (blocking check-in and publish), so a schema we emit with a bad key is a
+# form the author cannot ship. See @lukeflow/form-core KEY_REGEX_SOURCE / RESERVED_KEYS — keep
+# these two constants in step with it; fixtures/agent-schema-cases.json is the cross-language
+# guard that they have not drifted.
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_KEYS = {"true", "false", "null", "undefined", "NaN", "Infinity"}
+
+
+def _safe_key(raw: object, label: object, taken: set[str]) -> str:
+    """Coerce anything into a UNIQUE, valid form-core data key.
+
+    The LLM is *asked* for snake_case, which is not the same as being held to it: it will
+    eventually answer "Full Name", "e-mail", "naïve" or "123". Each of those renders a schema
+    form-core rejects outright, so the author gets an AI-built form that cannot be checked in.
+    Normalising here — the single point where every schema is produced — means no upstream path
+    (first build, chat edit, hand-edited import) can emit an unusable key.
+    """
+    text = str(raw or "").strip()
+    # Latin accents decompose to ASCII (naïve -> naive) rather than being dropped to nothing.
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^A-Za-z0-9_]+", "_", text).strip("_")
+    text = re.sub(r"_{2,}", "_", text)
+
+    if not text or text[0].isdigit():
+        # Fall back to the LABEL before an anonymous name: "123" on a field called "Age" is far
+        # more useful to a human reading the payload as "age" than as "field".
+        from_label = re.sub(r"[^A-Za-z0-9_]+", "_",
+                            unicodedata.normalize("NFKD", str(label or "")).encode("ascii", "ignore").decode("ascii")).strip("_")
+        if from_label and not from_label[0].isdigit():
+            # Lowercased because this key is SYNTHESISED by us, and SpecField documents keys as
+            # snake_case. A key the author actually chose keeps its casing (firstName stays
+            # firstName) — only our invention follows the house style.
+            text = re.sub(r"_{2,}", "_", from_label).lower()
+        elif text:
+            text = f"field_{text}"  # keep the digits, just make them addressable
+        else:
+            text = "field"
+
+    if text in _RESERVED_KEYS or not _KEY_RE.match(text):
+        text = f"{text}_"
+
+    # Uniqueness is checked across the WHOLE form, including entities the LLM never sees (a
+    # container's nested children), so this must consider preserved keys too — see spec_to_schema.
+    if text not in taken:
+        taken.add(text)
+        return text
+    n = 2
+    while f"{text}_{n}" in taken:
+        n += 1
+    out = f"{text}_{n}"
+    taken.add(out)
+    return out
+
+
+def _collect_keys(entities: dict) -> set[str]:
+    """Every data key already spoken for by a preserved entity, at any depth."""
+    out: set[str] = set()
+    for ent in (entities or {}).values():
+        if isinstance(ent, dict):
+            k = (ent.get("attributes") or {}).get("key")
+            if isinstance(k, str) and k:
+                out.add(k)
+    return out
 
 
 def _new_id() -> str:
@@ -151,8 +220,15 @@ def spec_to_schema(
     entities: dict = {}
     root: list = []
     used: set = set()
+    # Keys already spoken for by entities the LLM cannot see — a container's nested children share
+    # the submission namespace, so a new top-level field named `inner` would silently collide with
+    # a panel child of the same name and form-core would reject BOTH as duplicate-key.
+    taken_keys: set[str] = _collect_keys(preserved_entities)
 
     for f in spec.fields:
+        # Look the previous entity up by the key the LLM used, BEFORE normalising: that is the key
+        # it saw in the projection, and matching on it is what preserves the entity id and its
+        # advanced attributes across an edit.
         prev = existing.get(f.key)
         eid = prev["id"] if prev else _new_id()
         # Never collide with a preserved entity id or one already emitted.
@@ -167,7 +243,9 @@ def spec_to_schema(
         attrs = dict(prev["attributes"]) if same_type else {}
 
         attrs["label"] = f.label
-        attrs["key"] = f.key
+        # NORMALISED, never the raw value: form-core rejects a key that isn't a plain identifier
+        # (and rejects duplicates) as an ERROR, which blocks check-in and publish outright.
+        attrs["key"] = _safe_key(f.key, f.label, taken_keys)
 
         if f.type in NO_REQUIRED_TYPES:
             attrs.pop("required", None)
