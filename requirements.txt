@@ -2,7 +2,7 @@ fastapi==0.116.2
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 groq==0.13.1
-openai==2.48.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set. Pinned
+openai==2.54.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set. Pinned
                          # (was >=1.99.0): an unpinned floor lets a future release silently break the
                          # build/behavior with no code change — supply-chain risk (D7). This freezes
                          # the version CI already resolves. Bump deliberately + re-run tests.
