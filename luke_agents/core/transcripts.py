@@ -136,6 +136,10 @@ class TurnRecord:
     changed: Optional[bool] = None  # auto quality signal: did the form change?
     latency_ms: Optional[int] = None
     error: Optional[str] = None  # set when the turn failed (excluded from training)
+    # #64: durable per-turn token usage (from llm.last_usage()) — auditable per-tenant/period
+    # history to bill and report against, independent of the live Prometheus counter.
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
     consent: bool = True  # whether the caller allows training use
     created_at: str = field(default_factory=_now_iso)
     # Set by for_storage() to preserve the real prompt hash when content is dropped.
@@ -182,6 +186,7 @@ class TurnRecord:
             messages=messages, output=output, input_schema=input_schema,
             tenant_id=self.tenant_id, user_id=self.user_id, session_id=self.session_id,
             changed=self.changed, latency_ms=self.latency_ms, error=self.error,
+            prompt_tokens=self.prompt_tokens, completion_tokens=self.completion_tokens,
             consent=self.consent, created_at=self.created_at,
         )
         rec._prompt_hash_override = original_hash
@@ -424,6 +429,8 @@ class PostgresStore(TranscriptStore):
                 changed       boolean,
                 latency_ms    integer,
                 error         text,
+                prompt_tokens     integer,
+                completion_tokens integer,
                 consent       boolean NOT NULL DEFAULT true,
                 accepted      boolean,
                 rating        smallint,
@@ -435,6 +442,10 @@ class PostgresStore(TranscriptStore):
             -- #33: migrate pre-existing tables, then index by tenant for scoped
             -- reads/exports and per-tenant erasure.
             ALTER TABLE {self.schema}.turns ADD COLUMN IF NOT EXISTS tenant_id text;
+            -- #64: durable per-turn token history. Authoritative DDL lives in migration 0004;
+            -- this keeps a Postgres-backed dev box / first boot working before it runs.
+            ALTER TABLE {self.schema}.turns ADD COLUMN IF NOT EXISTS prompt_tokens integer;
+            ALTER TABLE {self.schema}.turns ADD COLUMN IF NOT EXISTS completion_tokens integer;
             CREATE INDEX IF NOT EXISTS turns_tenant_idx
                 ON {self.schema}.turns (tenant_id, agent, created_at);
             -- #40: append-only audit of sensitive actions (export, label change). Authoritative
@@ -476,14 +487,16 @@ class PostgresStore(TranscriptStore):
         sql = f"""
             INSERT INTO {self.schema}.turns
               (id, agent, brain, model, tenant_id, user_id, session_id, prompt_hash,
-               messages, output, input_schema, changed, latency_ms, error, consent)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               messages, output, input_schema, changed, latency_ms, error,
+               prompt_tokens, completion_tokens, consent)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id) DO NOTHING
         """
         params = (
             rec.id, rec.agent, rec.brain, rec.model, rec.tenant_id, rec.user_id, rec.session_id,
             rec.prompt_hash, Json(rec.messages), Json(rec.output),
-            Json(rec.input_schema), rec.changed, rec.latency_ms, rec.error, rec.consent,
+            Json(rec.input_schema), rec.changed, rec.latency_ms, rec.error,
+            rec.prompt_tokens, rec.completion_tokens, rec.consent,
         )
         self._run(lambda cur: cur.execute(sql, params))
 

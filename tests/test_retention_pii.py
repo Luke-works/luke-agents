@@ -60,6 +60,17 @@ def test_consent_true_keeps_content(tmp_path):
     assert any("a@b.com" in m["content"] for m in row["messages"])
 
 
+def test_token_usage_is_persisted_and_kept_even_without_consent(tmp_path):
+    # #64: per-turn token counts are billing/reporting METADATA, not user content — so they
+    # round-trip to storage and survive the consent=False minimal path (like id / timings).
+    store = JsonlStore(str(tmp_path))
+    store.record_turn(_rec(prompt_tokens=120, completion_tokens=34, consent=False))
+    row = _read(store)[0]
+    assert row["prompt_tokens"] == 120
+    assert row["completion_tokens"] == 34
+    assert all(m["content"] == "" for m in row["messages"])  # content still dropped
+
+
 # --- redaction hook -------------------------------------------------------------
 
 def test_redact_scrubs_pii():
