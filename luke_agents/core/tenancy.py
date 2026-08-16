@@ -20,7 +20,13 @@ import os
 from fastapi import HTTPException, Request
 
 TENANT_HEADER = "x-tenant-id"
+TIER_HEADER = "x-tenant-tier"
 _MAX_LEN = 200
+
+# The commercial plan tiers a request may declare (mirror of core-engine PlanCatalog ids). A tier
+# outside this set — or an absent header — resolves to None, and the token budget then falls back to
+# its flat cap: agents never has to know the full pricing model, only which bucket to size against.
+KNOWN_TIERS = ("FREE", "PRO", "BUSINESS", "ENTERPRISE")
 
 
 def default_tenant() -> str:
@@ -42,3 +48,13 @@ def resolve_tenant(request: Request) -> str:
     if require_tenant():
         raise HTTPException(status_code=400, detail="X-Tenant-Id is required")
     return default_tenant()
+
+
+def resolve_tier(request: Request) -> str | None:
+    """The tenant's commercial plan tier, from the ``X-Tenant-Tier`` header — the gateway/caller
+    sets it from the plan core-engine already resolved (``GET /api/plan``), so agents never fetches
+    the plan itself. Returns an upper-cased known tier, or ``None`` when the header is absent or not
+    a recognized tier. ``None`` is the default-lenient signal: the token budget falls back to its
+    flat cap, so a missing/garbage tier can neither block a request nor silently widen its budget."""
+    raw = (request.headers.get(TIER_HEADER) or "").strip().upper()
+    return raw if raw in KNOWN_TIERS else None

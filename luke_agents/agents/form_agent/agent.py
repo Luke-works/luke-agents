@@ -15,7 +15,7 @@ from ...core import llm
 from ...core.errors import brain_http_error
 from ...core.net import client_ip
 from ...core.ratelimit import enforce
-from ...core.tenancy import resolve_tenant
+from ...core.tenancy import resolve_tenant, resolve_tier
 from ...core import tokenbudget
 from ...core.observability import correlation_id_var
 from ...core.transcripts import (
@@ -70,7 +70,7 @@ class FormAgent(Agent):
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
             # Per-tenant DAILY token cap (D5): reject if this org already hit today's ceiling.
-            tokenbudget.enforce(tenant)
+            tokenbudget.enforce(tenant, resolve_tier(request))
 
             # Project the incoming coltorapps schema to a flat spec, keeping the
             # bits we must not lose so the rebuild can merge instead of clobber.
@@ -150,7 +150,7 @@ class FormAgent(Agent):
             for the current form, to drive the builder's Test runs."""
             tenant = resolve_tenant(request)
             enforce(_rate_key(request, tenant))
-            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
+            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title

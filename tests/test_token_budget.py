@@ -100,3 +100,93 @@ def test_endpoint_blocks_second_call_when_tenant_over_cap(monkeypatch):
     r2 = client.post("/chat", json=body)
     assert r2.status_code == 429
     assert "daily AI usage limit" in r2.json()["detail"]
+
+
+# ── tier-aware caps (Phase 2c) ──────────────────────────────────────────────────────────────
+
+
+def _req(headers: dict):
+    """A minimal Starlette request carrying `headers`, for resolve_tier."""
+    from starlette.requests import Request
+
+    scope = {"type": "http", "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()]}
+    return Request(scope)
+
+
+def test_resolve_tier_reads_known_header_and_rejects_junk():
+    from luke_agents.core.tenancy import resolve_tier
+
+    assert resolve_tier(_req({"X-Tenant-Tier": "pro"})) == "PRO"          # normalized to upper
+    assert resolve_tier(_req({"X-Tenant-Tier": "ENTERPRISE"})) == "ENTERPRISE"
+    assert resolve_tier(_req({"X-Tenant-Tier": "platinum"})) is None      # not a known tier
+    assert resolve_tier(_req({})) is None                                 # absent → None (lenient)
+
+
+def test_tier_cap_sizes_the_budget(monkeypatch):
+    # Free capped tight, Pro roomier; flat cap left unset.
+    monkeypatch.setenv("AGENTS_TOKEN_CAP_FREE", "1000")
+    monkeypatch.setenv("AGENTS_TOKEN_CAP_PRO", "5000")
+    # A FREE tenant is blocked at its 1000 ceiling…
+    tb.enforce("free-co", "FREE")
+    tb.record("free-co", 1000)
+    with pytest.raises(Exception) as ei:
+        tb.enforce("free-co", "FREE")
+    assert getattr(ei.value, "status_code", None) == 429
+    # …while a PRO tenant with the same 1000 spend is still well under its 5000 budget.
+    tb.enforce("pro-co", "PRO")
+    tb.record("pro-co", 1000)
+    tb.enforce("pro-co", "PRO")  # allowed
+
+
+def test_unknown_or_absent_tier_falls_back_to_the_flat_cap(monkeypatch):
+    monkeypatch.setenv("AGENTS_TENANT_DAILY_TOKEN_CAP", "1000")  # flat armed, no tier caps
+    tb.enforce("acme", None)          # no tier → flat cap
+    tb.record("acme", 1000)
+    with pytest.raises(Exception):    # an unknown tier also falls back to the flat cap → blocked
+        tb.enforce("acme", "PLATINUM")
+
+
+def test_a_tier_with_no_cap_is_uncapped_but_still_metered(monkeypatch):
+    # Only PRO is armed; metering is therefore ON, but ENTERPRISE has no ceiling and no flat cap.
+    monkeypatch.setenv("AGENTS_TOKEN_CAP_PRO", "5000")
+    tb.enforce("ent-co", "ENTERPRISE")
+    tb.record("ent-co", 10_000_000)
+    tb.enforce("ent-co", "ENTERPRISE")               # never blocked — no ceiling for this tier
+    assert tb.current_usage("ent-co") == 10_000_000  # but usage IS recorded (metering is on)
+
+
+def test_still_disabled_when_no_flat_and_no_tier_caps():
+    # The default-lenient guarantee must survive the tier feature: nothing configured → no metering.
+    tb.enforce("acme", "PRO")
+    tb.record_current(10_000_000)
+    assert tb.current_usage("acme") == 0
+
+
+def test_endpoint_sizes_budget_by_tier_header(monkeypatch):
+    """End-to-end: the same fake brain (2000 tokens/turn) trips a FREE tenant on its 2nd call but a
+    PRO tenant sails past — proving the X-Tenant-Tier header sizes the budget through the real path."""
+    monkeypatch.setenv("AGENTS_TOKEN_CAP_FREE", "1000")
+    monkeypatch.setenv("AGENTS_TOKEN_CAP_PRO", "100000")
+    monkeypatch.setenv("TRANSCRIPTS_ENABLED", "false")
+    tb.reset()
+
+    from luke_agents.agents.form_agent.schema import AssistantTurn
+
+    def fake_generate(system, user, model_cls, **_kw):
+        tb.record_current(2000)
+        return AssistantTurn()
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+
+    import main
+
+    client = TestClient(main.app)
+    body = {"message": "hi", "schema": {"entities": {}, "root": []}}
+
+    free = {"X-Tenant-Id": "free-co", "X-Tenant-Tier": "FREE"}
+    assert client.post("/chat", json=body, headers=free).status_code == 200
+    assert client.post("/chat", json=body, headers=free).status_code == 429  # 2000 ≥ 1000
+
+    pro = {"X-Tenant-Id": "pro-co", "X-Tenant-Tier": "PRO"}
+    assert client.post("/chat", json=body, headers=pro).status_code == 200
+    assert client.post("/chat", json=body, headers=pro).status_code == 200  # roomy 100k budget
