@@ -88,6 +88,9 @@ class FormAgent(Agent):
             t0 = time.perf_counter()
 
             def _record(output: dict | None, changed: bool | None, error: str | None) -> None:
+                # #64: attribute this turn's tokens (from the LLM layer). Success only — a failed
+                # turn's stale/partial usage must not be billed.
+                usage = llm.last_usage() if error is None else None
                 safe_record_turn(TurnRecord(
                     id=turn_id, agent=self.meta.slug,
                     brain=llm.active_brain(), model=llm.active_model(),
@@ -96,6 +99,8 @@ class FormAgent(Agent):
                     user_id=req.user_id, session_id=req.session_id, changed=changed,
                     latency_ms=int((time.perf_counter() - t0) * 1000),
                     error=error, consent=req.consent,
+                    prompt_tokens=usage.prompt_tokens if usage else None,
+                    completion_tokens=usage.completion_tokens if usage else None,
                 ))
 
             try:
