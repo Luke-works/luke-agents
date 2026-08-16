@@ -17,7 +17,7 @@ from ...core import llm
 from ...core.errors import brain_http_error
 from ...core.net import client_ip
 from ...core.ratelimit import enforce
-from ...core.tenancy import resolve_tenant
+from ...core.tenancy import resolve_tenant, resolve_tier
 from ...core import tokenbudget
 from ...core.transcripts import TurnRecord, safe_record_turn
 from .ops import derive_reply, derive_suggestions, extract_variables, repair_doc
@@ -61,7 +61,7 @@ class EmailAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
-            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
+            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             # The response_model IS the EmailDoc: json_object mode guarantees a
             # valid document, and we repair/clamp it before returning so the UI
@@ -126,7 +126,7 @@ class EmailAgent(Agent):
             drive the builder's live preview + test send."""
             tenant = resolve_tenant(request)
             enforce(_rate_key(request, tenant))
-            tokenbudget.enforce(tenant)  # per-tenant daily token cap (D5)
+            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             try:
                 doc = EmailDoc.model_validate(req.doc) if req.doc else EmailDoc()
             except Exception as exc:  # noqa: BLE001 - malformed incoming doc

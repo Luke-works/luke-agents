@@ -7,11 +7,17 @@ many LLM tokens a TENANT consumes per UTC day*, which is the fleet's real cost d
 across many IPs and user_ids can stay under every per-caller limit yet still run up unbounded
 token spend — this closes that hole with one number the operator controls.
 
-DEFAULT-LENIENT: OFF unless ``AGENTS_TENANT_DAILY_TOKEN_CAP`` is a positive integer. Unset / 0
-/ invalid = no cap, so dev/qa keep working with zero config. Arm it in prod by setting e.g.
-``AGENTS_TENANT_DAILY_TOKEN_CAP=1000000`` (~$9/mo worst-case per tenant on the default Groq
-model). Tier-aware limits (a per-tenant number chosen by subscription tier) can later feed the
-same ``enforce()`` / ``record()`` path unchanged — only where the number comes from changes.
+DEFAULT-LENIENT: OFF unless a cap is configured. Unset / 0 / invalid = no cap, so dev/qa keep
+working with zero config. Arm a flat cap for every tenant with e.g.
+``AGENTS_TENANT_DAILY_TOKEN_CAP=1000000`` (~$9/mo worst-case per tenant on the default Groq model).
+
+TIER-AWARE: a tenant's cap is sized by its commercial plan. When ``AGENTS_TOKEN_CAP_<TIER>`` is set
+(``AGENTS_TOKEN_CAP_FREE`` / ``_PRO`` / ``_BUSINESS`` / ``_ENTERPRISE``), a request carrying that tier
+(the ``X-Tenant-Tier`` header, resolved by ``tenancy.resolve_tier``) is capped at that number; a tier
+with no configured cap — or an absent/unknown tier — falls back to the flat cap. So a bigger plan
+gets a bigger AI budget, and a missing tier can neither block a request nor silently widen its budget.
+The day's usage is recorded whenever ANY cap is configured; only the ceiling checked at ``enforce()``
+depends on the tier.
 
 Backend mirrors ``ratelimit.py``:
   * ``REDIS_URL`` set   → a per-tenant, per-UTC-day counter in Redis (INCRBY + ~2-day EXPIRE),
@@ -44,13 +50,43 @@ _CURRENT_TENANT: ContextVar[str | None] = ContextVar("_budget_tenant", default=N
 _SECONDS_PER_DAY = 24 * 60 * 60
 
 
-def _cap() -> int:
-    """Today's per-tenant token cap; <= 0 (unset / 0 / invalid) means DISABLED. Read at call time
-    so an operator (or a test) can change it without a reimport."""
+# The commercial plan tiers a per-tier cap can be set for (mirror of core-engine PlanCatalog ids).
+_TIERS = ("FREE", "PRO", "BUSINESS", "ENTERPRISE")
+
+
+def _int_env(name: str) -> int:
+    """Read a non-negative int env knob; unset / 0 / invalid → 0. Read at call time so an operator
+    (or a test) can change it without a reimport."""
     try:
-        return int(os.getenv("AGENTS_TENANT_DAILY_TOKEN_CAP", "0"))
+        return int(os.getenv(name, "0"))
     except ValueError:
         return 0
+
+
+def _flat_cap() -> int:
+    """The tier-agnostic daily cap (``AGENTS_TENANT_DAILY_TOKEN_CAP``); <= 0 means unset."""
+    return _int_env("AGENTS_TENANT_DAILY_TOKEN_CAP")
+
+
+def _tier_cap(tier: str | None) -> int:
+    """The daily cap configured for a specific tier (``AGENTS_TOKEN_CAP_<TIER>``), or 0 if unset."""
+    if not tier:
+        return 0
+    return _int_env(f"AGENTS_TOKEN_CAP_{tier.strip().upper()}")
+
+
+def _cap_for(tier: str | None) -> int:
+    """Today's cap for a request on `tier`: the tier-specific cap when configured (> 0), otherwise
+    the flat cap. <= 0 means DISABLED for this request — the default-lenient outcome for an unknown
+    tier when the flat cap is also unset, so a missing/garbage tier can never block or widen budget."""
+    tc = _tier_cap(tier)
+    return tc if tc > 0 else _flat_cap()
+
+
+def _metering_on() -> bool:
+    """True when ANY cap (flat or any tier) is configured. Gates whether we record usage at all, so
+    a fully-unconfigured deployment does zero accounting work (and stays exactly as it was)."""
+    return _flat_cap() > 0 or any(_int_env(f"AGENTS_TOKEN_CAP_{t}") > 0 for t in _TIERS)
 
 
 def _utc_day(now: float) -> str:
@@ -152,12 +188,15 @@ def current_usage(tenant: str) -> int:
     return _counter.get(tenant, _utc_day(time.time()))
 
 
-def enforce(tenant: str) -> None:
-    """Bind `tenant` to this request (so its LLM usage is attributed) and raise HTTP 429 if it
-    has already reached today's token cap. No-op — beyond binding the tenant — when the cap is
-    disabled, so dev/qa are never blocked. Agents call this right after the rate-limit ``enforce``."""
+def enforce(tenant: str, tier: str | None = None) -> None:
+    """Bind `tenant` to this request (so its LLM usage is attributed) and raise HTTP 429 if it has
+    already reached today's token cap. The cap is chosen by `tier` (``AGENTS_TOKEN_CAP_<TIER>``) when
+    that tier is armed, else the flat cap — so a higher plan gets a bigger AI budget. No-op — beyond
+    binding the tenant — when the resolved cap is disabled, so dev/qa (and any un-armed tier) are
+    never blocked. Agents call this right after the rate-limit ``enforce``, passing the tier from
+    ``resolve_tier(request)``."""
     _CURRENT_TENANT.set(tenant)
-    cap = _cap()
+    cap = _cap_for(tier)
     if cap <= 0:
         return
     now = time.time()
@@ -176,9 +215,10 @@ def enforce(tenant: str) -> None:
 
 
 def record(tenant: str, tokens: int) -> None:
-    """Add `tokens` to `tenant`'s usage for today (UTC). No-op when the cap is disabled or
-    tokens <= 0 — when there's no cap there's nothing to meter."""
-    if tokens <= 0 or _cap() <= 0:
+    """Add `tokens` to `tenant`'s usage for today (UTC). No-op when metering is entirely off (no flat
+    or tier cap configured) or tokens <= 0 — when nothing is capped there's nothing to meter. The
+    day's tally is tier-agnostic (just total tokens); the tier only decides the ceiling at enforce."""
+    if tokens <= 0 or not _metering_on():
         return
     _counter.add(tenant, _utc_day(time.time()), int(tokens))
 
