@@ -29,13 +29,17 @@ def _schema() -> str:
     return s
 
 
+# The schema name is interpolated into DDL because a SQL identifier CANNOT be a bound parameter,
+# and it is validated against `_IDENT` above (and by the app before any migration runs), so it is
+# not attacker-controllable. Same pattern as migrations 0002/0003. The `# nosemgrep` markers below
+# silence the generic "formatted SQL" rule for these provably-safe identifier interpolations.
 def upgrade() -> None:
     s = _schema()
-    op.execute(f"ALTER TABLE {s}.turns ADD COLUMN IF NOT EXISTS prompt_tokens integer;")
-    op.execute(f"ALTER TABLE {s}.turns ADD COLUMN IF NOT EXISTS completion_tokens integer;")
+    op.execute(f"ALTER TABLE {s}.turns ADD COLUMN IF NOT EXISTS prompt_tokens integer;")  # nosemgrep
+    op.execute(f"ALTER TABLE {s}.turns ADD COLUMN IF NOT EXISTS completion_tokens integer;")  # nosemgrep
 
 
 def downgrade() -> None:
     s = _schema()
-    op.execute(f"ALTER TABLE {s}.turns DROP COLUMN IF EXISTS completion_tokens;")
-    op.execute(f"ALTER TABLE {s}.turns DROP COLUMN IF EXISTS prompt_tokens;")
+    op.execute(f"ALTER TABLE {s}.turns DROP COLUMN IF EXISTS completion_tokens;")  # nosemgrep
+    op.execute(f"ALTER TABLE {s}.turns DROP COLUMN IF EXISTS prompt_tokens;")  # nosemgrep
