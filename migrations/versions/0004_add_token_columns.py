@@ -11,6 +11,7 @@ Create Date: 2026-08-16
 """
 import os
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -21,6 +22,8 @@ depends_on = None
 
 _IDENT = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+_COLUMNS = ("prompt_tokens", "completion_tokens")
+
 
 def _schema() -> str:
     s = os.getenv("AGENTS_DB_SCHEMA", "luke_agents")
@@ -29,17 +32,26 @@ def _schema() -> str:
     return s
 
 
-# The schema name is interpolated into DDL because a SQL identifier CANNOT be a bound parameter,
-# and it is validated against `_IDENT` above (and by the app before any migration runs), so it is
-# not attacker-controllable. Same pattern as migrations 0002/0003. The `# nosemgrep` markers below
-# silence the generic "formatted SQL" rule for these provably-safe identifier interpolations.
+def _existing_columns(schema: str) -> set:
+    """Columns already on <schema>.turns — makes this migration idempotent against a DB where the
+    app's inline init() DDL already added them (mirrors the IF-NOT-EXISTS intent of 0002/0003)."""
+    insp = sa.inspect(op.get_bind())
+    return {c["name"] for c in insp.get_columns("turns", schema=schema)}
+
+
+# Uses Alembic's structured DDL API (op.add_column / op.drop_column) rather than a formatted SQL
+# string — no identifier interpolation, and idempotent via the existence check above.
 def upgrade() -> None:
     s = _schema()
-    op.execute(f"ALTER TABLE {s}.turns ADD COLUMN IF NOT EXISTS prompt_tokens integer;")  # nosemgrep
-    op.execute(f"ALTER TABLE {s}.turns ADD COLUMN IF NOT EXISTS completion_tokens integer;")  # nosemgrep
+    have = _existing_columns(s)
+    for col in _COLUMNS:
+        if col not in have:
+            op.add_column("turns", sa.Column(col, sa.Integer(), nullable=True), schema=s)
 
 
 def downgrade() -> None:
     s = _schema()
-    op.execute(f"ALTER TABLE {s}.turns DROP COLUMN IF EXISTS completion_tokens;")  # nosemgrep
-    op.execute(f"ALTER TABLE {s}.turns DROP COLUMN IF EXISTS prompt_tokens;")  # nosemgrep
+    have = _existing_columns(s)
+    for col in reversed(_COLUMNS):
+        if col in have:
+            op.drop_column("turns", col, schema=s)
