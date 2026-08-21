@@ -8,7 +8,7 @@ openai==2.48.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_
                          # the version CI already resolves. Bump deliberately + re-run tests.
 python-dotenv==1.2.2     # 1.0.1 had PYSEC-2026-2270; 1.2.2 patched it (D7).
 psycopg2-binary==2.9.10   # transcript store (only used when DATABASE_URL is set)
-alembic==1.14.1           # versioned DB migrations for the transcript schema (#31)
+alembic==1.19.1           # versioned DB migrations for the transcript schema (#31)
 redis==5.2.1              # shared rate-limit store (only used when REDIS_URL is set; #27)
 prometheus-client==0.21.1 # Prometheus metrics exposed at GET /metrics (#22)
 # Optional alternative brains:
