@@ -457,3 +457,69 @@ def test_health_reports_byo_mode_and_never_a_key(monkeypatch, tmp_path):
     assert body["byo_key"] is True
     assert body["brain"] == "per-request"      # there is no process brain under BYO
     assert "key" not in str(body).lower().replace("byo_key", "")
+
+
+# --------------------------------------------------------------------------- #
+# Telling core-engine WHY a turn failed. It holds the key, so it is the only thing
+# that can mark a workspace's provider invalid — but only for a real rejection.
+# --------------------------------------------------------------------------- #
+def _err(exc):
+    from luke_agents.core.errors import brain_http_error
+
+    return brain_http_error(exc)
+
+
+class _Status(Exception):
+    def __init__(self, status, msg=""):
+        super().__init__(msg or f"status {status}")
+        self.status_code = status
+
+
+def test_a_rejected_key_is_signalled_as_invalid():
+    for exc in (_Status(401), _Status(403),
+                _Status(400, "Incorrect API key provided"),
+                type("AuthenticationError", (Exception,), {})("nope")):
+        e = _err(exc)
+        assert e.status_code == 402, exc
+        assert e.headers["X-AI-Credential"] == "invalid"
+        assert "reject" in e.detail.lower()
+
+
+def test_a_provider_outage_is_never_mistaken_for_a_bad_key():
+    """The worst failure mode this feature has: disconnecting a working workspace because
+    the provider had a bad minute."""
+    for exc in (_Status(429, "rate limit exceeded"), _Status(500), _Status(503),
+                TimeoutError("timed out"), _Status(408)):
+        e = _err(exc)
+        assert e.status_code != 402, exc
+        assert "X-AI-Credential" not in (e.headers or {}), exc
+
+
+def test_a_quota_message_on_a_401_is_still_a_rejection():
+    """A 401 body often mentions quota. Mislabelled as 'busy', the workspace retries forever
+    with no idea what is actually wrong."""
+    e = _err(_Status(401, "You exceeded your current quota / rate limit"))
+    assert e.status_code == 402
+    assert e.headers["X-AI-Credential"] == "invalid"
+
+
+def test_status_on_the_response_object_is_honoured():
+    """google-genai puts the status on .response, not on the exception."""
+    exc = RuntimeError("denied")
+    exc.response = type("R", (), {"status_code": 403})()
+    assert _err(exc).headers["X-AI-Credential"] == "invalid"
+
+
+def test_missing_and_invalid_are_distinguishable(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTS_REQUIRE_CREDENTIAL", "true")
+    client = _app(monkeypatch, tmp_path, [])
+    res = client.post("/chat", json=_BODY, headers={"X-Tenant-Id": "acme"})
+    assert res.status_code == 402
+    assert res.headers["X-AI-Credential"] == "missing"   # never connected, not "key is bad"
+
+
+def test_the_error_body_never_echoes_the_provider_message():
+    """A provider's raw error can carry model ids, upstream URLs and account details."""
+    e = _err(_Status(401, "key sk-live-abc123 is invalid for org org_secret"))
+    assert "sk-live-abc123" not in e.detail
+    assert "org_secret" not in e.detail

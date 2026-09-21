@@ -60,7 +60,9 @@ class CredentialRequired(HTTPException):
     """
 
     def __init__(self, detail: str = "This workspace has not connected an AI provider.") -> None:
-        super().__init__(status_code=402, detail=detail)
+        # The header is the machine-stable half; core-engine reads it to tell "never connected"
+        # from "the provider refused the key" (errors.py sets the same header with "invalid").
+        super().__init__(status_code=402, detail=detail, headers={"X-AI-Credential": "missing"})
 
 
 @dataclass(frozen=True)

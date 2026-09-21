@@ -19,6 +19,30 @@ _BUSY = (
     "Please wait a few seconds and try again."
 )
 _UNAVAILABLE = "The AI service is temporarily unavailable. Please try again shortly."
+_REJECTED = ("Your AI provider rejected this workspace's API key. "
+             "Reconnect your provider to keep using the assistant.")
+
+# Machine-stable signal on the response, for core-engine (which holds the key) to act on:
+#   missing -> the workspace has not connected a provider
+#   invalid -> the provider refused the stored key, so it should be marked and re-verified
+# A header rather than a body field so the existing {"detail": "..."} contract is unchanged.
+CREDENTIAL_HEADER = "X-AI-Credential"
+
+
+def _is_credential_rejection(exc: Exception, status: object) -> bool:
+    """Whether the PROVIDER refused the workspace's key, as opposed to failing.
+
+    Deliberately narrow. A timeout, a 5xx or a 429 says nothing about the key, and treating
+    one as a rejection would switch off a working workspace because the provider had a bad
+    minute — the worst failure mode this feature has."""
+    if status in (401, 403):
+        return True
+    name = type(exc).__name__.lower()
+    if "authentication" in name or "permissiondenied" in name:
+        return True
+    text = str(exc).lower()
+    return any(m in text for m in ("invalid api key", "invalid_api_key", "incorrect api key",
+                                   "api key not valid", "unauthorized", "authentication_error"))
 
 
 def brain_http_error(exc: Exception, *, busy_message: str | None = None) -> HTTPException:
@@ -33,9 +57,17 @@ def brain_http_error(exc: Exception, *, busy_message: str | None = None) -> HTTP
     the returned ``detail`` never contains the provider's raw exception text.
     """
     status = getattr(exc, "status_code", None)
+    if status is None:
+        # Provider SDKs put it on the response, not the exception (e.g. google-genai).
+        status = getattr(getattr(exc, "response", None), "status_code", None)
     text = str(exc).lower()
     # Full detail stays server-side only.
     log.warning("brain error (status=%s): %s", status, exc, exc_info=True)
+    # Checked BEFORE the rate-limit branch: a 401 body can mention quotas, and mislabelling a
+    # rejected key as "busy" leaves the workspace retrying forever with no idea what is wrong.
+    if _is_credential_rejection(exc, status):
+        return HTTPException(status_code=402, detail=_REJECTED,
+                             headers={CREDENTIAL_HEADER: "invalid"})
     if status == 429 or "rate limit" in text or "429" in text:
         return HTTPException(status_code=429, detail=busy_message or _BUSY)
     if isinstance(status, int) and 500 <= status < 600:
