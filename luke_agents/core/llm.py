@@ -137,18 +137,62 @@ class BrainUnavailable(RuntimeError):
 # Provider client reuse (#25) — construct each SDK client once and share it, so
 # TCP/TLS connections and pools are reused across turns instead of rebuilt per call.
 # --------------------------------------------------------------------------- #
+# Bounded, because the cache key now includes the CREDENTIAL: one entry per distinct
+# workspace key this worker has ever served, each owning an httpx client with its own
+# connection pool, sockets and SSL context. Unbounded, a busy multi-tenant worker leaks
+# file descriptors until it dies. LRU by insertion order; the evicted client is closed so
+# its sockets go with it.
+_CLIENT_CACHE_MAX = int(os.getenv("LLM_CLIENT_CACHE_MAX", "64"))
+
+# A plain dict: insertion-ordered since 3.7, so it is all an LRU needs — and it keeps
+# `_clients = {}` (what every test does to start clean) a valid reset.
 _clients: dict = {}
 _clients_lock = threading.Lock()
 
 
+def _touch(key: str) -> None:
+    """Move `key` to the most-recently-used end. Caller holds the lock."""
+    try:
+        _clients[key] = _clients.pop(key)
+    except KeyError:  # evicted between the read and here — nothing to reorder
+        pass
+
+
+def _close_quietly(client) -> None:
+    """Release an evicted client's sockets. Best-effort: a provider SDK that exposes no
+    close() (or throws on it) must never break the turn that triggered the eviction."""
+    for name in ("close", "_close"):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                log.debug("llm: closing an evicted provider client failed", exc_info=True)
+            return
+
+
 def _cached_client(key: str, factory):
-    client = _clients.get(key)
-    if client is None:
-        with _clients_lock:
-            client = _clients.get(key)
-            if client is None:
-                client = factory()
-                _clients[key] = client
+    with _clients_lock:
+        client = _clients.get(key)
+        if client is not None:
+            _touch(key)  # mark recently used
+            return client
+    # Build outside the lock: constructing a client can do real work (TLS, DNS), and holding
+    # the lock would serialise every tenant's first turn behind the slowest one.
+    client = factory()
+    evicted = None
+    with _clients_lock:
+        existing = _clients.get(key)
+        if existing is not None:
+            # Another thread won the race; keep theirs and discard ours.
+            _touch(key)
+            _close_quietly(client)
+            return existing
+        _clients[key] = client
+        while len(_clients) > max(1, _CLIENT_CACHE_MAX):
+            evicted = _clients.pop(next(iter(_clients)))
+    if evicted is not None:
+        _close_quietly(evicted)
     return client
 
 
@@ -446,7 +490,7 @@ def _openai(system: str, user: str, response_model: type[T], model: str | None =
     return response_model.model_validate_json(msg.content or "{}")
 
 
-def _anthropic(system: str, user: str, response_model: type[T], temperature: float,
+def _anthropic(system: str, user: str, response_model: type[T], _temperature: float,
                model: str | None = None, *, api_key: str | None = None) -> T:
     """Claude via forced tool use — the provider's way of guaranteeing a schema-shaped result.
 
@@ -466,6 +510,9 @@ def _anthropic(system: str, user: str, response_model: type[T], temperature: flo
         "description": "Return the answer in the required shape. You must call this tool.",
         "input_schema": response_model.model_json_schema(),
     }
+    # NOTE: no `temperature`. anthropic 1.x removed it from messages.create and the method
+    # takes no **kwargs, so passing it is a TypeError on every turn. Forced tool use already
+    # pins the output shape, which is all `temperature` was doing for us on the other brains.
     resp = client.messages.create(
         model=chosen,
         max_tokens=ANTHROPIC_MAX_TOKENS,  # Anthropic requires an explicit output cap
@@ -473,7 +520,6 @@ def _anthropic(system: str, user: str, response_model: type[T], temperature: flo
         messages=[{"role": "user", "content": user}],
         tools=[tool],
         tool_choice={"type": "tool", "name": "respond"},
-        temperature=temperature,
     )
     _u = getattr(resp, "usage", None)
     _note_usage("anthropic", chosen, getattr(_u, "input_tokens", None), getattr(_u, "output_tokens", None))

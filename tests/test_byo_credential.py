@@ -523,3 +523,118 @@ def test_the_error_body_never_echoes_the_provider_message():
     e = _err(_Status(401, "key sk-live-abc123 is invalid for org org_secret"))
     assert "sk-live-abc123" not in e.detail
     assert "org_secret" not in e.detail
+
+
+# --------------------------------------------------------------------------- #
+# Regressions found by adversarial review. Each of these shipped green once.
+# --------------------------------------------------------------------------- #
+def test_anthropic_is_called_the_way_the_installed_sdk_actually_accepts():
+    """anthropic 1.x removed `temperature` from messages.create and takes no **kwargs, so
+    passing it is a TypeError on EVERY turn. The first fake accepted **kwargs, which hid it —
+    so assert against the real installed signature instead of a stand-in."""
+    import inspect
+
+    from anthropic.resources.messages import Messages
+
+    sig = inspect.signature(Messages.create)
+    accepted = set(sig.parameters)
+    takes_kwargs = any(p.kind is p.VAR_KEYWORD for p in sig.parameters.values())
+
+    sent = {"model", "max_tokens", "system", "messages", "tools", "tool_choice"}
+    unsupported = sent - accepted
+    assert not unsupported or takes_kwargs, f"_anthropic sends {unsupported}, which the SDK rejects"
+    assert "temperature" not in sent or "temperature" in accepted
+
+
+def test_model_output_can_never_be_read_as_a_rejected_key(monkeypatch):
+    """A pydantic ValidationError embeds the offending INPUT, which is model output. A form
+    field labelled "Unauthorized access report" was enough to mark a perfectly good key
+    INVALID and switch the workspace off."""
+    from pydantic import ValidationError
+
+    class _Strict(BaseModel):
+        n: int
+
+    try:
+        _Strict.model_validate({"n": "unauthorized: invalid api key"})
+        raise AssertionError("expected a validation error")
+    except ValidationError as exc:
+        e = _err(exc)
+    assert e.status_code != 402
+    assert "X-AI-Credential" not in (e.headers or {})
+
+
+def test_a_bad_key_is_still_recognised_when_the_provider_uses_a_400():
+    """Google answers a wrong key with 400 INVALID_ARGUMENT, not 401 — so status alone is not
+    enough, and the text has to be consulted for client errors."""
+    e = _err(_Status(400, "API key not valid. Please pass a valid API key."))
+    assert e.status_code == 402
+    assert e.headers["X-AI-Credential"] == "invalid"
+
+
+def test_prose_on_a_server_error_is_never_a_rejected_key():
+    """Text is only trusted on a client error; a 500 whose body happens to contain a phrase
+    must not disconnect anyone."""
+    e = _err(_Status(500, "upstream said: invalid api key (while proxying)"))
+    assert e.status_code != 402
+
+
+def test_an_exhausted_account_is_not_reported_as_a_passing_rate_limit():
+    """Both usually arrive as 429, but one clears by waiting and the other never clears until
+    someone pays. 'Wait a few seconds' forever is a mystery, not an error message."""
+    for exc in (_Status(429, "You exceeded your current quota, please check your plan and billing details"),
+                _Status(429, "insufficient_quota"),
+                _Status(400, "Your credit balance is too low to access the Anthropic API")):
+        e = _err(exc)
+        assert e.status_code == 402, exc
+        # NOT "invalid": the key works, so nothing should disconnect the workspace.
+        assert e.headers["X-AI-Credential"] == "exhausted"
+        assert "credit" in e.detail.lower() or "quota" in e.detail.lower()
+
+
+def test_an_ordinary_rate_limit_is_still_a_429():
+    e = _err(_Status(429, "rate limit exceeded, retry in 2s"))
+    assert e.status_code == 429
+    assert "X-AI-Credential" not in (e.headers or {})
+
+
+def test_the_client_cache_is_bounded_and_closes_what_it_evicts(monkeypatch):
+    """The cache key now includes the credential, so it grows with the number of distinct
+    workspace keys this worker has served. Each entry owns a connection pool and sockets."""
+    monkeypatch.setattr(llm, "_CLIENT_CACHE_MAX", 3)
+    closed: list = []
+
+    class _Client:
+        def __init__(self, n):
+            self.n = n
+
+        def close(self):
+            closed.append(self.n)
+
+    for i in range(6):
+        llm._cached_client(f"groq:key{i}", lambda i=i: _Client(i))
+
+    assert len(llm._clients) == 3, "the cache must not grow with every workspace"
+    assert closed == [0, 1, 2], "evicted clients must be closed, or their sockets leak"
+    # The survivors are the three most recent.
+    assert set(llm._clients) == {"groq:key3", "groq:key4", "groq:key5"}
+
+
+def test_reuse_keeps_an_entry_alive_and_never_closes_a_live_client(monkeypatch):
+    monkeypatch.setattr(llm, "_CLIENT_CACHE_MAX", 2)
+    closed: list = []
+
+    class _Client:
+        def __init__(self, n):
+            self.n = n
+
+        def close(self):
+            closed.append(self.n)
+
+    a = llm._cached_client("groq:a", lambda: _Client("a"))
+    llm._cached_client("groq:b", lambda: _Client("b"))
+    assert llm._cached_client("groq:a", lambda: _Client("a2")) is a   # reused, not rebuilt
+    llm._cached_client("groq:c", lambda: _Client("c"))                # evicts the LRU
+
+    assert closed == ["b"], "recently used 'a' must survive; 'b' was the least recent"
+    assert "groq:a" in llm._clients
