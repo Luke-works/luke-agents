@@ -11,6 +11,10 @@ psycopg2-binary==2.9.10   # transcript store (only used when DATABASE_URL is set
 alembic==1.14.1           # versioned DB migrations for the transcript schema (#31)
 redis==5.2.1              # shared rate-limit store (only used when REDIS_URL is set; #27)
 prometheus-client==0.21.1 # Prometheus metrics exposed at GET /metrics (#22)
-# Optional alternative brains:
-# google-genai==0.8.0   # Gemini (blocked for managed domains)
+anthropic==1.7.0         # Claude brain. Required, not optional: under BYO-key any workspace may
+                         # bring an Anthropic key, so the import has to succeed on every instance.
+google-genai==2.24.0     # Gemini brain. Same reason — a workspace can bring a Gemini key. (Google
+                         # still blocks managed/Workspace domains from issuing one; that is the
+                         # tenant's problem to see at connect time, not an import-time failure.)
+# Optional, dev only:
 # ollama==0.4.5         # local model for dev (not usable on Render free tier)
