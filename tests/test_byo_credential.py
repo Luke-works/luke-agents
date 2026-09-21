@@ -638,3 +638,50 @@ def test_reuse_keeps_an_entry_alive_and_never_closes_a_live_client(monkeypatch):
 
     assert closed == ["b"], "recently used 'a' must survive; 'b' was the least recent"
     assert "groq:a" in llm._clients
+
+
+# --------------------------------------------------------------------------- #
+# The engine is the fleet's only caller, so per-user rate limiting depends on what
+# it tells us — and on us believing it only when it has proved who it is.
+# --------------------------------------------------------------------------- #
+class _IpReq:
+    def __init__(self, headers=None, peer="9.9.9.9"):
+        self.headers = headers or {}
+
+        class _C:
+            host = peer
+
+        self.client = _C()
+
+
+def test_an_authenticated_engine_may_state_the_caller_ip(monkeypatch):
+    from luke_agents.core.net import client_ip
+
+    monkeypatch.setenv("AGENTS_API_KEY", "svc-secret")
+    ip = client_ip(_IpReq({"x-agents-key": "svc-secret", "x-caller-ip": "203.0.113.7",
+                           "x-forwarded-for": "10.0.0.1, 10.0.0.2"}))
+    # Believed over the hop arithmetic: with the engine in front, the number of appended XFF
+    # entries depends on the network path, and guessing wrong collapses every user in a
+    # workspace into one rate-limit bucket.
+    assert ip == "203.0.113.7"
+
+
+def test_an_unauthenticated_caller_cannot_state_its_own_ip(monkeypatch):
+    from luke_agents.core.net import client_ip
+
+    monkeypatch.setenv("AGENTS_API_KEY", "svc-secret")
+    for headers in ({"x-caller-ip": "1.2.3.4"},                                  # no service key
+                    {"x-agents-key": "wrong", "x-caller-ip": "1.2.3.4"}):        # wrong key
+        ip = client_ip(_IpReq({**headers, "x-forwarded-for": "8.8.8.8, 10.0.0.2"}))
+        assert ip != "1.2.3.4", headers
+    monkeypatch.delenv("AGENTS_API_KEY", raising=False)
+    assert client_ip(_IpReq({"x-caller-ip": "1.2.3.4", "x-forwarded-for": "8.8.8.8, 10.0.0.2"})) != "1.2.3.4"
+
+
+def test_the_hop_counting_path_is_unchanged_when_no_caller_ip_is_stated(monkeypatch):
+    from luke_agents.core.net import client_ip
+
+    monkeypatch.setenv("AGENTS_API_KEY", "svc-secret")
+    monkeypatch.setenv("AGENTS_TRUSTED_PROXY_HOPS", "2")
+    assert client_ip(_IpReq({"x-agents-key": "svc-secret",
+                             "x-forwarded-for": "spoofed, 203.0.113.9, 10.0.0.2"})) == "203.0.113.9"

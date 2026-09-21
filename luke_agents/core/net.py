@@ -31,13 +31,43 @@ def _trusted_hops() -> int:
         return _DEFAULT_TRUSTED_HOPS
 
 
+#: Set by core-engine, which resolved the caller itself and is the fleet's only caller under
+#: bring-your-own-key. Trusted ONLY when the request also presented the shared service key, so
+#: nothing a browser can reach may set it.
+CALLER_IP_HEADER = "x-caller-ip"
+
+
+def _trusted_caller(request: Request) -> bool:
+    """Whether this request came from core-engine, proved by the shared service key.
+
+    Mirrors ``auth.require_api_key``: unset key means an open local run, where there is no
+    trust to establish and no point pretending otherwise."""
+    expected = os.getenv("AGENTS_API_KEY", "").strip()
+    if not expected:
+        return False
+    import hmac
+
+    provided = request.headers.get("x-agents-key", "")
+    return bool(provided) and hmac.compare_digest(provided, expected)
+
+
 def client_ip(request: Request, trusted_hops: int | None = None) -> str:
     """The real client IP for rate-limiting / audit keys — spoof-resistant.
 
-    Counts ``trusted_hops`` entries from the RIGHT of ``X-Forwarded-For`` (default from
-    ``AGENTS_TRUSTED_PROXY_HOPS``, else 2). Falls back to the direct peer when no XFF is present
-    (local/direct dev), and to ``"anon"`` if even that is missing — so it never raises.
+    Prefers ``X-Caller-Ip`` from an authenticated core-engine, which resolved the caller from
+    its own request and is the only thing that calls us in a deployed environment. That avoids
+    counting proxy hops at all: with the engine in front, the number of appended entries in
+    ``X-Forwarded-For`` depends on the engine→fleet network path, and getting it wrong silently
+    collapses every user in a workspace into one rate-limit bucket.
+
+    Otherwise counts ``trusted_hops`` entries from the RIGHT of ``X-Forwarded-For`` (default
+    from ``AGENTS_TRUSTED_PROXY_HOPS``, else 2). Falls back to the direct peer when no XFF is
+    present (local/direct dev), and to ``"anon"`` if even that is missing — so it never raises.
     """
+    if _trusted_caller(request):
+        stated = (request.headers.get(CALLER_IP_HEADER) or "").strip()
+        if stated:
+            return stated[:64]
     n = trusted_hops if trusted_hops is not None else _trusted_hops()
     xff = request.headers.get("x-forwarded-for", "")
     hops = [h.strip() for h in xff.split(",") if h.strip()]
