@@ -1,3 +1,15 @@
+# STANDALONE blueprint — a fleet running on its own, with no Lukeflow engine in front.
+#
+# The Lukeflow platform does NOT use this file: platform-*-agents are declared in
+# luke-platform/render.yaml, where there is no provider key at all. Every turn there runs on
+# the calling workspace's own LLM account (bring-your-own-key), the engine is the only caller,
+# and AGENTS_REQUIRE_CREDENTIAL=true refuses anything else.
+#
+# ⚠️ A service deployed from THIS file holds a provider key that YOU pay for, and the auth
+# gates below are default-lenient. Do not leave one reachable from the internet without
+# setting AGENTS_API_KEY and AGENTS_CORS — an open instance is a bill anyone can run up.
+# For anything beyond local/demo use, set AGENTS_REQUIRE_CREDENTIAL=true and put a caller in
+# front that supplies each workspace's own key.
 services:
   - type: web
     name: luke-agents

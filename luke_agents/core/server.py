@@ -22,6 +22,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from .auth import require_api_key
+from .credential import bind as bind_credential, require_credential
 from .llm import active_brain
 from .metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
 from .metrics import MetricsMiddleware
@@ -93,6 +94,12 @@ def assert_prod_hardened() -> None:
         problems.append("AGENTS_CORS is '*'/unset — CORS would be wide open")
     if os.getenv("AGENTS_REQUIRE_TENANT", "").strip().lower() not in ("1", "true", "yes", "on"):
         problems.append("AGENTS_REQUIRE_TENANT not true — all traffic collapses to one budget")
+    if not require_credential():
+        # BYO-key is the product contract: each workspace runs on its own provider account.
+        # Without this, a turn with no credential silently falls back to a platform env key —
+        # which is precisely the "anyone can burn our tokens" hole the contract removes.
+        problems.append(
+            "AGENTS_REQUIRE_CREDENTIAL not true — turns would fall back to a platform key")
     if problems:
         raise RuntimeError(
             f"Refusing to start in production (AGENTS_ENV={env}): "
@@ -193,7 +200,10 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         store = get_store()
         return {
             "status": "ok",
-            "brain": active_brain(),
+            # Under BYO-key there is no process brain: each turn runs on the workspace's own
+            # provider. Report the mode rather than an env fallback that never serves traffic.
+            "brain": "per-request" if require_credential() else active_brain(),
+            "byo_key": require_credential(),
             "transcripts": store.name,
             "transcripts_ephemeral": store.ephemeral,
             "transcript_writes": transcript_metrics(),
@@ -213,8 +223,11 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         # without killing it (that's liveness' job).
         store = get_store()
         store_ok = store.ping()
-        brain = active_brain()
-        brain_ok = bool(brain)
+        # Under BYO-key the brain arrives with the request, so there is nothing to probe here;
+        # a missing platform key is the expected steady state, not an unready instance.
+        byo = require_credential()
+        brain = "per-request" if byo else active_brain()
+        brain_ok = True if byo else bool(brain)
         ready = store_ok and brain_ok
         if not ready:
             response.status_code = 503
@@ -231,7 +244,10 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
     # route uniformly — including any added later (#32). /health and / are declared
     # on the app above (outside any router) and stay open by design.
     for agent in agents:
-        gate = [Depends(require_api_key)]
+        # bind_credential runs alongside the API-key gate so EVERY agent route — including
+        # any added later — resolves the workspace credential, and refuses the turn when one
+        # is required and absent. Same argument as auth.require_api_key: opt-out, not opt-in.
+        gate = [Depends(require_api_key), Depends(bind_credential)]
         # #37: canonical VERSIONED mount (documented in OpenAPI).
         v1_prefix = f"/{api_version}/agents/{agent.meta.slug}"
         app.include_router(agent.build_router(), prefix=v1_prefix, dependencies=gate,
@@ -245,7 +261,8 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         _mount_static(app, agent, legacy_prefix)
 
     # Default agent also at the root for drop-in single-agent compatibility (documented).
-    app.include_router(default.build_router(), prefix="", dependencies=[Depends(require_api_key)],
+    app.include_router(default.build_router(), prefix="",
+                       dependencies=[Depends(require_api_key), Depends(bind_credential)],
                        tags=[default.meta.slug])
 
     _install_curated_openapi(app, title, api_version)

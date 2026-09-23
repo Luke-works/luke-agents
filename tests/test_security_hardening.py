@@ -140,7 +140,8 @@ from luke_agents.core.server import assert_prod_hardened
 
 
 def _clear_prod_env(monkeypatch):
-    for k in ("AGENTS_ENV", "AGENTS_API_KEY", "AGENTS_CORS", "FORM_AGENT_CORS", "AGENTS_REQUIRE_TENANT"):
+    for k in ("AGENTS_ENV", "AGENTS_API_KEY", "AGENTS_CORS", "FORM_AGENT_CORS", "AGENTS_REQUIRE_TENANT",
+              "AGENTS_REQUIRE_CREDENTIAL"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -159,6 +160,9 @@ def test_prod_guard_fails_open_service(monkeypatch):
         assert_prod_hardened()
     msg = str(ei.value)
     assert "AGENTS_API_KEY" in msg and "AGENTS_CORS" in msg and "AGENTS_REQUIRE_TENANT" in msg
+    # BYO-key is part of "locked down": a platform key in the request path is exactly what
+    # lets an unauthenticated caller burn our tokens.
+    assert "AGENTS_REQUIRE_CREDENTIAL" in msg
 
 
 def test_prod_guard_passes_when_locked_down(monkeypatch):
@@ -167,4 +171,17 @@ def test_prod_guard_passes_when_locked_down(monkeypatch):
     monkeypatch.setenv("AGENTS_API_KEY", "a-real-key")
     monkeypatch.setenv("AGENTS_CORS", "https://app.lukeflow.com")
     monkeypatch.setenv("AGENTS_REQUIRE_TENANT", "true")
+    monkeypatch.setenv("AGENTS_REQUIRE_CREDENTIAL", "true")
     assert_prod_hardened()  # no raise
+
+
+def test_prod_guard_refuses_a_platform_key_fallback(monkeypatch):
+    """Everything else locked down, BYO-key off — still refused. Without this the service
+    would happily serve turns on Lukeflow's own provider key in production."""
+    _clear_prod_env(monkeypatch)
+    monkeypatch.setenv("AGENTS_ENV", "production")
+    monkeypatch.setenv("AGENTS_API_KEY", "a-real-key")
+    monkeypatch.setenv("AGENTS_CORS", "https://app.lukeflow.com")
+    monkeypatch.setenv("AGENTS_REQUIRE_TENANT", "true")
+    with pytest.raises(RuntimeError, match="AGENTS_REQUIRE_CREDENTIAL"):
+        assert_prod_hardened()

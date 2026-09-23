@@ -5,6 +5,24 @@ A small platform for hosting many LLM agents behind **one** FastAPI app and one
 layer handles the parts every agent needs — LLM brain selection, per-caller rate
 limiting, and the server that mounts agents under `/agents/<slug>`.
 
+## Bring your own key
+
+**Every turn runs on the calling workspace's own LLM account, not on a key we pay for.**
+Lukeflow's core-engine authenticates the user, decrypts that workspace's provider key and
+attaches it to the request (`X-AI-Provider` / `X-AI-Key` / `X-AI-Model`); `core/credential.py`
+resolves it per request and `core/llm.py` runs the turn on it. This service never looks a key
+up, so it cannot be talked into revealing one it was not given.
+
+Because the key varies per request, everything derived from it — provider SDK clients,
+circuit-breaker state — is keyed by a hash of the credential. Keyed by brain name alone, a
+client built with one workspace's key would serve another workspace's turn.
+
+Set **`AGENTS_REQUIRE_CREDENTIAL=true`** to make that contract mandatory: a turn with no
+credential is refused (402) rather than falling back to the env keys below. Every deployed
+Lukeflow environment sets it, and `AGENTS_ENV=production` refuses to boot without it. The
+`GROQ_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` env vars are the
+**local-dev fallback only**.
+
 The first agent is **`form_agent`**: chat-to-build-forms (**LukeBuilds**), emitting
 the coltorapps builder schema that luke-consumer-ui / luke-capability-engine
 consume, plus test-data generation (**LukeTests**) for the builder's Test feature.
@@ -17,7 +35,8 @@ luke-agents/
   main.py                          # uvicorn entrypoint: registers agents -> build_app(...)
   luke_agents/
     core/                          # agent-agnostic plumbing
-      llm.py                       #   brain selection (Groq | OpenAI gpt-5-nano | Gemini | Ollama) + typed generate()
+      credential.py                #   the calling workspace's provider key, per request (BYO-key)
+      llm.py                       #   brain per request (Groq | OpenAI | Anthropic | Gemini | Ollama) + typed generate()
       ratelimit.py                 #   per-caller sliding-window limiter (+ enforce() -> HTTP 429)
       registry.py                  #   the Agent contract (AgentMeta + Agent base class)
       server.py                    #   build_app(): CORS, /health, mounting, root landing
@@ -107,6 +126,11 @@ Get a free Groq key (email signup, no card): https://console.groq.com/keys
 1. Push this folder to a GitHub repo.
 2. In Render: **New ➜ Blueprint** (picks up `render.yaml`).
 3. Add `GROQ_API_KEY` in the dashboard, deploy, visit the service URL.
+
+   ⚠️ That standalone deployment runs on **your** key with default-lenient auth. Set
+   `AGENTS_API_KEY` and `AGENTS_CORS` before exposing it, or set
+   `AGENTS_REQUIRE_CREDENTIAL=true` and put a caller in front that supplies each
+   workspace's own key (which is what the Lukeflow platform blueprint does).
 
 > Migrating off the old `luke-form-agent` deployment: this app serves the form
 > agent at the root `POST /chat` too, so pointing `VITE_FORM_AGENT_URL` at the
