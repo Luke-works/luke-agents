@@ -8,7 +8,7 @@ openai==2.48.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_
                          # (was >=1.99.0): an unpinned floor lets a future release silently break the
                          # build/behavior with no code change — supply-chain risk (D7). This freezes
                          # the version CI already resolves. Bump deliberately + re-run tests.
-python-dotenv==1.2.2     # 1.0.1 had PYSEC-2026-2270; 1.2.2 patched it (D7).
+python-dotenv==1.2.3     # 1.0.1 had PYSEC-2026-2270; 1.2.2 patched it (D7).
 psycopg2-binary==2.9.10   # transcript store (only used when DATABASE_URL is set)
 alembic==1.14.1           # versioned DB migrations for the transcript schema (#31)
 # Pinned because alembic asks only for SQLAlchemy>=1.3.0 — an unpinned floor of exactly the
