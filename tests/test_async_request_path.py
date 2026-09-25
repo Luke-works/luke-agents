@@ -257,3 +257,74 @@ def test_the_response_schema_is_not_rebuilt_on_every_turn():
         _llm._json_schema(Counted)
 
     assert built["n"] == 1, f"the schema was rebuilt {built['n']} times for one model"
+
+
+def test_a_blocking_guard_does_not_stall_the_loop(monkeypatch):
+    """The regression this whole conversion can suffer, caught in the REAL request path.
+
+    The earlier interleaving test stubs `llm.generate`, so it never exercises the guards that run
+    before it — which is where the actual blocker shipped: `tokenbudget.check` reads a counter
+    that, under Redis, is a blocking socket round trip, and it briefly ran on the event loop.
+
+    So: make the counter genuinely slow, then measure whether the loop can still tick while a
+    request is inside it. If `check` runs on the loop, the heartbeat stops dead for the duration;
+    run in a thread, it keeps beating. Asserted as "did the heartbeat keep going", not as a
+    latency number, so a loaded runner cannot make it flaky.
+    """
+    import time as _time
+
+    from luke_agents.core import tokenbudget as tb
+
+    BLOCK_S = 0.4
+
+    class SlowCounter:
+        def get(self, tenant, day):
+            _time.sleep(BLOCK_S)  # stands in for a Redis round trip
+            return 0
+
+        def add(self, tenant, day, tokens):
+            pass
+
+    monkeypatch.setattr(tb, "_counter", SlowCounter())
+    monkeypatch.setenv("AGENTS_TENANT_DAILY_TOKEN_CAP", "1000")  # arm the cap so `check` reads
+    monkeypatch.setenv("TRANSCRIPTS_ENABLED", "false")
+    monkeypatch.delenv("AGENTS_API_KEY", raising=False)
+    monkeypatch.setattr(llm, "generate", _returns_turn())
+    monkeypatch.setattr(llm, "active_brain", lambda: "test")
+    monkeypatch.setattr(llm, "active_model", lambda: "test-model")
+
+    app = build_app([FormAgent()])
+
+    async def drive():
+        import httpx
+
+        beats = 0
+        stop = False
+
+        async def heartbeat():
+            nonlocal beats
+            while not stop:
+                beats += 1
+                await asyncio.sleep(0.01)
+
+        hb = asyncio.create_task(heartbeat())
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+            res = await ac.post("/chat", json={"message": "hi", "schema": {"entities": {}, "root": []}})
+        stop = True
+        await hb
+        return res.status_code, beats
+
+    status, beats = asyncio.run(drive())
+
+    assert status == 200
+    # BLOCK_S / 0.01 ≈ 40 ticks were available. On the loop, the heartbeat would be starved to
+    # roughly nothing; a generous floor still separates the two cases decisively.
+    assert beats > 10, f"the event loop only ticked {beats} times — something blocked it"
+
+
+def _returns_turn():
+    async def _fake(*_a, **_k):
+        return AssistantTurn(reply="ok")
+
+    return _fake
