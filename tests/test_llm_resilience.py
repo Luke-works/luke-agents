@@ -1,7 +1,7 @@
 """#24 / #25 — LLM transient-retry + circuit breaker, and provider-client reuse."""
 import pytest
 
-from tests.aio import raises, record, returns, run, sequence
+from tests.aio import run
 
 import luke_agents.core.llm as llm
 

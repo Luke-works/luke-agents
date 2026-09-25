@@ -15,6 +15,7 @@ import inspect
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 import luke_agents.core.llm as llm
 from luke_agents.agents.email_agent import EmailAgent
@@ -230,3 +231,29 @@ def test_a_client_with_two_transports_has_both_closed():
 
     asyncio.run(drive())
     assert sorted(closed) == ["aio", "sync"], f"a transport was left open: {closed}"
+
+
+def test_the_response_schema_is_not_rebuilt_on_every_turn():
+    """`model_json_schema()` is NOT memoised by pydantic — measured at ~4.1 ms warm on this
+    service's own AssistantTurn. That was survivable on a threadpool thread; on the event loop it
+    is 4 ms of CPU no other request can run through, paid on every Anthropic turn.
+
+    Asserted by counting real work rather than timing, so it cannot go flaky on a loaded runner.
+    """
+    import luke_agents.core.llm as _llm
+
+    built = {"n": 0}
+
+    class Counted(BaseModel):
+        title: str
+
+        @classmethod
+        def model_json_schema(cls, *a, **k):  # type: ignore[override]
+            built["n"] += 1
+            return {"type": "object", "properties": {"title": {"type": "string"}}}
+
+    _llm._json_schema.cache_clear()
+    for _ in range(25):
+        _llm._json_schema(Counted)
+
+    assert built["n"] == 1, f"the schema was rebuilt {built['n']} times for one model"

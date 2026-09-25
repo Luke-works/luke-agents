@@ -3,7 +3,7 @@ with LLM_TIMEOUT_SECONDS so a hung upstream call can't pin the worker forever.""
 import pytest
 from pydantic import BaseModel
 
-from tests.aio import raises, record, returns, run, sequence
+from tests.aio import run
 
 import luke_agents.core.llm as llm
 

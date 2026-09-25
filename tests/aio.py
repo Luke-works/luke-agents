@@ -5,7 +5,7 @@ are `async def`, so an 85-second research turn waits on a socket instead of hold
 worker's threads. Tests reach them two ways, and both need something here:
 
   * calling them          -> `run(...)`, a one-line `asyncio.run`;
-  * replacing them        -> `returns(...)` / `raises(...)`, which build ASYNC fakes. A plain
+  * replacing them        -> `returns(...)` / `record(...)`, which build ASYNC fakes. A plain
                              `lambda: turn` used to work and now fails with "object AssistantTurn
                              can't be used in 'await' expression" — the endpoint awaits it.
 
@@ -54,28 +54,5 @@ def record(into: list, value: Any = None) -> Callable[..., Any]:
     async def _fake(*args: Any, **_kwargs: Any) -> Any:
         into.append(args[0] if args else None)
         return value
-
-    return _fake
-
-
-def raises(exc: BaseException) -> Callable[..., Any]:
-    """An async stand-in that raises — for the transient/breaker paths."""
-
-    async def _fake(*_args: Any, **_kwargs: Any) -> Any:
-        raise exc
-
-    return _fake
-
-
-def sequence(values: list) -> Callable[..., Any]:
-    """An async stand-in that answers each value in turn, repeating the last once exhausted.
-
-    A research turn calls `generate` twice — the ask, then the rebuild with findings — so a test
-    that wants to see the second pass has to be able to answer differently.
-    """
-    remaining = list(values)
-
-    async def _fake(*_args: Any, **_kwargs: Any) -> Any:
-        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
     return _fake
