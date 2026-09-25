@@ -533,19 +533,26 @@ def test_the_error_body_never_echoes_the_provider_message():
 def test_anthropic_is_called_the_way_the_installed_sdk_actually_accepts():
     """anthropic 1.x removed `temperature` from messages.create and takes no **kwargs, so
     passing it is a TypeError on EVERY turn. The first fake accepted **kwargs, which hid it —
-    so assert against the real installed signature instead of a stand-in."""
+    so assert against the real installed signature instead of a stand-in.
+
+    Against AsyncMessages, because that is what the code calls now. Introspecting the sync class
+    would be checking a signature nothing in this service uses, which is how a guard keeps
+    passing while the thing it guards drifts away underneath it. Both call sites are covered:
+    the build turn and the research turn send different arguments."""
     import inspect
 
-    from anthropic.resources.messages import Messages
+    from anthropic.resources.messages import AsyncMessages
 
-    sig = inspect.signature(Messages.create)
+    sig = inspect.signature(AsyncMessages.create)
     accepted = set(sig.parameters)
     takes_kwargs = any(p.kind is p.VAR_KEYWORD for p in sig.parameters.values())
 
-    sent = {"model", "max_tokens", "system", "messages", "tools", "tool_choice"}
-    unsupported = sent - accepted
-    assert not unsupported or takes_kwargs, f"_anthropic sends {unsupported}, which the SDK rejects"
-    assert "temperature" not in sent or "temperature" in accepted
+    build = {"model", "max_tokens", "system", "messages", "tools", "tool_choice"}
+    research = {"model", "max_tokens", "system", "messages", "tools", "timeout"}
+    for name, sent in (("build", build), ("research", research)):
+        unsupported = sent - accepted
+        assert not unsupported or takes_kwargs, f"the {name} call sends {unsupported}, which the SDK rejects"
+    assert "temperature" not in build and "temperature" not in research
 
 
 def test_model_output_can_never_be_read_as_a_rejected_key(monkeypatch):

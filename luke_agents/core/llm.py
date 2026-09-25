@@ -246,8 +246,16 @@ def _close_quietly(client) -> None:
     turn that is already on the event loop, so hand the coroutine to the loop and let it finish
     in the background; nobody is waiting on a socket teardown.
     """
-    for name in ("close", "aclose", "_close"):
-        fn = getattr(client, name, None)
+    # EVERY transport the client owns, not just the first one found. google-genai keeps two:
+    # `close()` shuts the sync transport, while the async one this code actually calls lives at
+    # `.aio.aclose()` — closing only the first leaks precisely the sockets in use. Stopping at
+    # the first match looked tidy and released the wrong half.
+    closers = [getattr(client, n, None) for n in ("close", "aclose", "_close")]
+    aio = getattr(client, "aio", None)
+    if aio is not None:
+        closers += [getattr(aio, n, None) for n in ("aclose", "close")]
+
+    for fn in closers:
         if not callable(fn):
             continue
         try:
@@ -265,7 +273,6 @@ def _close_quietly(client) -> None:
                     asyncio.run(out)
         except Exception:  # noqa: BLE001
             log.debug("llm: closing an evicted provider client failed", exc_info=True)
-        return
 
 
 def _cached_client(key: str, factory):

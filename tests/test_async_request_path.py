@@ -196,3 +196,37 @@ def test_an_evicted_async_client_is_actually_closed():
 
     asyncio.run(drive())
     assert closed == ["a"], f"the evicted client's sockets were never released: {closed}"
+
+
+def test_a_client_with_two_transports_has_both_closed():
+    """google-genai keeps a sync transport at `close()` and the ASYNC one this code actually
+    calls at `.aio.aclose()`. Closing only the first — which stopping at the first match did —
+    releases the half nobody was using and leaks the half in flight."""
+    import luke_agents.core.llm as _llm
+
+    closed: list[str] = []
+
+    class Aio:
+        async def aclose(self):
+            closed.append("aio")
+
+    class TwoTransport:
+        aio = Aio()
+
+        def close(self):
+            closed.append("sync")
+
+    async def drive():
+        _llm._clients.clear()
+        original = _llm._CLIENT_CACHE_MAX
+        try:
+            _llm._CLIENT_CACHE_MAX = 1
+            _llm._cached_client("g1", TwoTransport)
+            _llm._cached_client("g2", TwoTransport)   # evicts g1
+            await asyncio.sleep(0.05)
+        finally:
+            _llm._CLIENT_CACHE_MAX = original
+            _llm._clients.clear()
+
+    asyncio.run(drive())
+    assert sorted(closed) == ["aio", "sync"], f"a transport was left open: {closed}"
