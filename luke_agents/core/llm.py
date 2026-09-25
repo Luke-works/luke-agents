@@ -133,7 +133,13 @@ RESEARCH_MAX_USES = int(os.getenv("RESEARCH_MAX_USES", "3"))
 # Research reads whole web pages, so it needs more room than a form-schema turn and more time than
 # a single completion: the provider runs several searches inside one call.
 RESEARCH_MAX_TOKENS = int(os.getenv("RESEARCH_MAX_TOKENS", "4096"))
-RESEARCH_TIMEOUT_SECONDS = float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "90"))
+# 25s, NOT 90. A research turn is THREE provider calls inside ONE /chat request — the build that
+# asks, the search, then the rebuild with findings — and the browser aborts a single request after
+# 25s (ATTEMPT_TIMEOUT_MS in luke-consumer-ui's formAgentApi.ts). At 90 the worst case was 30 + 90
+# + 30 = 150s: a research turn could NEVER finish before the client gave up, and the client then
+# retried it, starting a fresh billable search nobody would ever see. Keep the worst case
+# (LLM_TIMEOUT_SECONDS + this + LLM_TIMEOUT_SECONDS) comfortably under that client budget.
+RESEARCH_TIMEOUT_SECONDS = float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "25"))
 
 
 # Transient-retry + a lightweight per-brain circuit breaker (#24). A single blip (timeout, 5xx,
