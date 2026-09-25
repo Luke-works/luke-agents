@@ -136,7 +136,8 @@ class SentimentAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before the (paid) LLM call.
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             model = _model_override()
             try:
@@ -167,7 +168,8 @@ class SentimentAgent(Agent):
                 )
             # One LLM call regardless of item count -> one budget unit.
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             model = _model_override()
             try:
@@ -208,7 +210,8 @@ class SentimentAgent(Agent):
             # One LLM call for forms/emails/short docs; long docs do one batch call
             # over their sections (bounded by the doc cap) -> still one budget unit.
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             model = _model_override()
             brain = llm.active_brain()

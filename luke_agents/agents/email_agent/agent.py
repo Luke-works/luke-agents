@@ -70,7 +70,8 @@ class EmailAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             llm.reset_usage()  # cumulative usage: never inherit a reused thread's last turn
 
             # The response_model IS the EmailDoc: json_object mode guarantees a
@@ -139,7 +140,8 @@ class EmailAgent(Agent):
             drive the builder's live preview + test send."""
             tenant = resolve_tenant(request)
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             try:
                 doc = EmailDoc.model_validate(req.doc) if req.doc else EmailDoc()
             except Exception as exc:  # noqa: BLE001 - malformed incoming doc

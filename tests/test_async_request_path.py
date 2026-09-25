@@ -29,9 +29,12 @@ from luke_agents.core.server import build_app
 def test_every_endpoint_is_a_coroutine(agent):
     """A sync `def` here silently puts the endpoint back on a threadpool slot — no error, no
     test failure, just the old ceiling returning unnoticed."""
-    # By NAME, not by path: `page` serves the agent's static HTML and is correctly sync — it
-    # does no provider I/O, so a threadpool slot for the microsecond it takes costs nothing.
-    WORK = {"chat", "testdata", "feedback", "analyze", "batch", "intake"}
+    # By NAME, not by path, and only the endpoints that make a PROVIDER call. `page` serves
+    # static HTML; `feedback` does two synchronous psycopg2 writes and no provider call at all.
+    # Both are correctly sync: a threadpool slot is exactly what a brief blocking call should
+    # take, whereas the same call inside a coroutine stalls the whole worker. Async is for the
+    # 85-second wait on someone else's socket, not for everything.
+    WORK = {"chat", "testdata", "analyze", "batch", "intake"}
     app = build_app([agent()])
     endpoints = {
         r.endpoint.__name__: r.endpoint
@@ -41,6 +44,23 @@ def test_every_endpoint_is_a_coroutine(agent):
     assert endpoints, "no work endpoints found — the filter has drifted from the routes"
     sync = [n for n, e in endpoints.items() if not inspect.iscoroutinefunction(e)]
     assert not sync, f"these run on a threadpool slot instead of the loop: {sync}"
+
+
+def test_feedback_stays_synchronous():
+    """The other direction, and the one that is easy to get wrong while converting.
+
+    `/feedback` makes no provider call — it writes a label and an audit row through psycopg2,
+    synchronously. Converted to `async def` (as it briefly was, because a blanket sweep saw an
+    `await` in its body), those writes run ON the loop and stall every other request in the
+    worker. A sync endpoint takes one threadpool slot instead, which is what the pool is for.
+    """
+    app = build_app([FormAgent()])
+    fb = next((r.endpoint for r in app.routes
+               if getattr(r, "endpoint", None) is not None and r.endpoint.__name__ == "feedback"), None)
+    assert fb is not None, "the /feedback route has moved — this guard needs updating"
+    assert not inspect.iscoroutinefunction(fb), (
+        "/feedback does blocking DB writes; as a coroutine they run on the event loop"
+    )
 
 
 def test_the_llm_entry_points_are_awaitable():
@@ -100,3 +120,79 @@ def test_a_slow_turn_does_not_block_other_requests(monkeypatch):
     assert slow_code == 200
     # Three later requests completed while the first was still parked on its provider call.
     assert order == ["fast", "fast", "fast", "slow"], order
+
+
+def test_the_provider_calls_in_flight_are_bounded():
+    """Async removed the bound that the threadpool used to provide by accident.
+
+    A sync endpoint held a pool slot for its whole provider call, so the pool size capped how many
+    upstream calls could be open at once whether anyone intended it or not. Awaiting removes that
+    entirely: a burst opens as many connections as requests arrive, and the failure lands as the
+    provider rate-limiting the workspace's own key, or the box running out of sockets.
+    """
+    import luke_agents.core.llm as _llm
+
+    calls, peak, current = 0, 0, 0
+
+    async def provider():
+        nonlocal calls, peak, current
+        calls += 1
+        current += 1
+        peak = max(peak, current)
+        await asyncio.sleep(0.01)
+        current -= 1
+        return "ok"
+
+    async def drive():
+        return await asyncio.gather(*(_llm._run_brain("test", provider) for _ in range(20)))
+
+    original = _llm.LLM_MAX_INFLIGHT
+    try:
+        _llm.LLM_MAX_INFLIGHT = 3
+        _llm._inflight = None  # rebuild the semaphore at the new size
+        out = asyncio.run(drive())
+    finally:
+        _llm.LLM_MAX_INFLIGHT = original
+        _llm._inflight = None
+
+    assert out == ["ok"] * 20, "every turn still completes — the gate queues, it does not drop"
+    assert peak <= 3, f"{peak} provider calls were in flight at once, cap was 3"
+    assert calls == 20
+
+
+def test_an_evicted_async_client_is_actually_closed():
+    """Their close() returns a COROUTINE. Calling and dropping it closes nothing while raising
+    "never awaited" — the sockets leak exactly as they did before the cache was bounded.
+
+    What this proves: the close actually runs. What it does NOT prove is that the `_CLOSING`
+    strong reference is load-bearing — I tried, including forcing a collection between the
+    eviction and the yield, and could not make an unreferenced task vanish, because CPython's
+    loop holds a scheduled task in its ready queue. The reference stays anyway: asyncio's own
+    documentation warns that it keeps only a weak one and that callers must hold their own, and
+    "I could not reproduce it in a 50ms window" is not evidence that a documented hazard is not
+    real."""
+    import luke_agents.core.llm as _llm
+
+    closed: list[str] = []
+
+    class AsyncClient:
+        def __init__(self, name):
+            self.name = name
+
+        async def close(self):
+            closed.append(self.name)
+
+    async def drive():
+        _llm._clients.clear()
+        original = _llm._CLIENT_CACHE_MAX
+        try:
+            _llm._CLIENT_CACHE_MAX = 1
+            _llm._cached_client("a", lambda: AsyncClient("a"))
+            _llm._cached_client("b", lambda: AsyncClient("b"))  # evicts "a"
+            await asyncio.sleep(0.05)                           # let the close task run
+        finally:
+            _llm._CLIENT_CACHE_MAX = original
+            _llm._clients.clear()
+
+    asyncio.run(drive())
+    assert closed == ["a"], f"the evicted client's sockets were never released: {closed}"

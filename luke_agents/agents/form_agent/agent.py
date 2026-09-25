@@ -80,7 +80,8 @@ class FormAgent(Agent):
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             await run_in_threadpool(enforce, _rate_key(request, tenant))
             # Per-tenant DAILY token cap (D5): reject if this org already hit today's ceiling.
-            tokenbudget.enforce(tenant, resolve_tier(request))
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))
             # Threadpool workers are REUSED, and usage is cumulative across a turn's provider
             # calls now, so a turn must not inherit the previous turn's total on the same thread.
             llm.reset_usage()
@@ -207,7 +208,8 @@ class FormAgent(Agent):
             for the current form, to drive the builder's Test runs."""
             tenant = resolve_tenant(request)
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title
@@ -222,11 +224,16 @@ class FormAgent(Agent):
             return TestDataResponse(datasets=datasets, brain=llm.active_brain())
 
         @router.post("/feedback")
-        async def feedback(req: FeedbackRequest, request: Request) -> dict:
+        def feedback(req: FeedbackRequest, request: Request) -> dict:
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
-            only good training examples. Safe no-op if transcripts are disabled."""
+            only good training examples. Safe no-op if transcripts are disabled.
+
+            Deliberately SYNC. It makes no provider call — just two synchronous psycopg2 writes
+            and a rate-limit read — so `async def` bought it nothing and cost the loop everything:
+            a blocking write inside a coroutine stalls the entire worker, where a sync endpoint
+            simply takes one threadpool slot, which is what that pool is for."""
             tenant = resolve_tenant(request)
-            await run_in_threadpool(enforce, _rate_key(request, tenant))  # bound writes (was unauthenticated + unthrottled)
+            enforce(_rate_key(request, tenant))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)
             )

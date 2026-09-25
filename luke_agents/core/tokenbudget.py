@@ -188,14 +188,26 @@ def current_usage(tenant: str) -> int:
     return _counter.get(tenant, _utc_day(time.time()))
 
 
-def enforce(tenant: str, tier: str | None = None) -> None:
-    """Bind `tenant` to this request (so its LLM usage is attributed) and raise HTTP 429 if it has
-    already reached today's token cap. The cap is chosen by `tier` (``AGENTS_TOKEN_CAP_<TIER>``) when
-    that tier is armed, else the flat cap — so a higher plan gets a bigger AI budget. No-op — beyond
-    binding the tenant — when the resolved cap is disabled, so dev/qa (and any un-armed tier) are
-    never blocked. Agents call this right after the rate-limit ``enforce``, passing the tier from
-    ``resolve_tier(request)``."""
+def bind(tenant: str) -> None:
+    """Attribute this request's LLM usage to `tenant`.
+
+    Split out of :func:`enforce` because the two halves now belong in different places. This one
+    writes a ContextVar, so it MUST run on the request's own context — hand it to a threadpool and
+    the write lands in a COPY, the binding never comes back, and `record_current` finds no tenant:
+    the daily cap silently stops counting. That is exactly what happened when the whole of
+    `enforce` was moved off the loop during the async conversion.
+    """
     _CURRENT_TENANT.set(tenant)
+
+
+def check(tenant: str, tier: str | None = None) -> None:
+    """Raise HTTP 429 if `tenant` has already reached today's cap.
+
+    The other half: a counter READ, which under `RedisTokenCounter` is a blocking socket round
+    trip. An async endpoint must call this through `run_in_threadpool` — left on the loop it
+    stalls every other request in the worker, the opposite of what making those endpoints async
+    was for. Safe in a thread precisely because it only reads and raises.
+    """
     cap = _cap_for(tier)
     if cap <= 0:
         return
@@ -212,6 +224,14 @@ def enforce(tenant: str, tier: str | None = None) -> None:
         f"It resets at midnight UTC (in about {hours} hour{'s' if hours != 1 else ''}).",
         headers={"Retry-After": str(retry_after)},
     )
+
+
+def enforce(tenant: str, tier: str | None = None) -> None:
+    """Both halves, for synchronous callers (and the tests that predate the split). An ASYNC
+    endpoint should call `bind` on the loop and `check` in a threadpool instead — see their
+    docstrings for why neither placement works for the other."""
+    bind(tenant)
+    check(tenant, tier)
 
 
 def record(tenant: str, tokens: int) -> None:

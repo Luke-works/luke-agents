@@ -56,7 +56,8 @@ class WorkflowAgent(Agent):
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             await run_in_threadpool(enforce, _rate_key(request, tenant))
-            tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            tokenbudget.bind(tenant)  # ContextVar: must run on the request's own context
+            await run_in_threadpool(tokenbudget.check, tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             llm.reset_usage()  # cumulative usage: never inherit a reused thread's last turn
 
             user_msg = build_user_message(compact_doc(req.doc), req.message, req.catalog)

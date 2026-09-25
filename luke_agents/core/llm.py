@@ -166,6 +166,29 @@ RESEARCH_MAX_TOKENS = int(os.getenv("RESEARCH_MAX_TOKENS", "4096"))
 # (LLM_TIMEOUT_SECONDS + this + LLM_TIMEOUT_SECONDS) comfortably under that client budget.
 RESEARCH_TIMEOUT_SECONDS = float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "25"))
 
+# A ceiling on provider calls IN FLIGHT at once, per worker.
+#
+# The threadpool used to be this bound, implicitly: a sync endpoint held a slot for its whole
+# provider call, so the pool size capped concurrency whether anyone meant it to or not. Awaiting
+# instead removes that accidental limit entirely — a burst can open as many upstream connections
+# as requests arrive, and the failure mode is the provider rate-limiting the workspace's own key,
+# or the box running out of sockets. A semaphore puts the bound back, deliberately this time and
+# at a number chosen rather than inherited.
+LLM_MAX_INFLIGHT = int(os.getenv("LLM_MAX_INFLIGHT", "64"))
+_inflight: "asyncio.Semaphore | None" = None
+_inflight_loop = None
+
+
+def _inflight_gate() -> "asyncio.Semaphore":
+    """The per-loop semaphore. Built lazily because an asyncio primitive binds to the running
+    loop, and this module is imported long before one exists (and, in tests, across several)."""
+    global _inflight, _inflight_loop
+    loop = asyncio.get_running_loop()
+    if _inflight is None or _inflight_loop is not loop:
+        _inflight = asyncio.Semaphore(max(1, LLM_MAX_INFLIGHT))
+        _inflight_loop = loop
+    return _inflight
+
 
 # Transient-retry + a lightweight per-brain circuit breaker (#24). A single blip (timeout, 5xx,
 # dropped connection) on the active brain used to surface straight to the user as a 502; now the
@@ -207,6 +230,12 @@ def _touch(key: str) -> None:
         pass
 
 
+#: Strong references to in-flight client-close tasks (see `_close_quietly`). asyncio holds only
+#: a weak reference to a task, so anything fire-and-forget must be kept alive by its creator or it
+#: may simply vanish before it runs.
+_CLOSING: set = set()
+
+
 def _close_quietly(client) -> None:
     """Release an evicted client's sockets. Best-effort: a provider SDK that exposes no
     close() (or throws on it) must never break the turn that triggered the eviction.
@@ -225,7 +254,12 @@ def _close_quietly(client) -> None:
             out = fn()
             if asyncio.iscoroutine(out):
                 try:
-                    asyncio.get_running_loop().create_task(out)
+                    task = asyncio.get_running_loop().create_task(out)
+                    # HOLD A REFERENCE. asyncio keeps only a weak one, so a bare create_task can
+                    # be garbage-collected mid-flight and the close never happens — the sockets
+                    # leak exactly as they did before this cache was bounded, and silently.
+                    _CLOSING.add(task)
+                    task.add_done_callback(_CLOSING.discard)
                 except RuntimeError:
                     # No loop (a test, or shutdown): run it to completion here instead.
                     asyncio.run(out)
@@ -318,10 +352,12 @@ async def _run_brain(brain: str, fn, scope: str | None = None):
     scope = scope or brain
     _breaker_gate(scope, brain)
     attempts = 1 + max(0, LLM_MAX_RETRIES)
+    gate = _inflight_gate()
     last: BaseException | None = None
     for i in range(attempts):
         try:
-            out = await fn()
+            async with gate:  # bound the provider calls in flight; see LLM_MAX_INFLIGHT
+                out = await fn()
             _breaker_success(scope)
             return out
         except Exception as exc:  # noqa: BLE001
@@ -897,18 +933,26 @@ async def _gemini(system: str, user: str, response_model: type[T], temperature: 
 
 
 async def _ollama(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
+    import anyio.to_thread
     import ollama
 
-    # No key: Ollama is a local daemon, so one cached client for the process is correct.
-    resp = _cached_client("ollama", lambda: ollama.Client(timeout=LLM_TIMEOUT_SECONDS)).chat(  # #25
-        model=model or OLLAMA_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        format=response_model.model_json_schema(),  # forces schema-shaped JSON
-        options={"temperature": temperature},
-    )
+    # The `ollama` package ships no async client, so this one call really is synchronous — and an
+    # `async def` wrapping a blocking call is WORSE than the threadpool it replaced: it stalls the
+    # whole worker instead of occupying one slot. Hand it to a thread so this brain behaves like
+    # the other four from the loop's point of view. (Local dev only; there is no hosted Ollama.)
+    def _chat():
+        # No key: Ollama is a local daemon, so one cached client for the process is correct.
+        return _cached_client("ollama", lambda: ollama.Client(timeout=LLM_TIMEOUT_SECONDS)).chat(  # #25
+            model=model or OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            format=response_model.model_json_schema(),  # forces schema-shaped JSON
+            options={"temperature": temperature},
+        )
+
+    resp = await anyio.to_thread.run_sync(_chat)
     _get = resp.get if hasattr(resp, "get") else (lambda k, r=resp: getattr(r, k, None))
     _note_usage("ollama", model or OLLAMA_MODEL, _get("prompt_eval_count"), _get("eval_count"))
     return response_model.model_validate_json(resp["message"]["content"])
