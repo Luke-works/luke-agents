@@ -26,6 +26,7 @@ typed object. All form/agent specifics live in the agent, not here.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -490,6 +491,46 @@ def _openai(system: str, user: str, response_model: type[T], model: str | None =
     return response_model.model_validate_json(msg.content or "{}")
 
 
+# Models that answered a forced `tool_choice` with a 400. Learned at runtime rather than listed,
+# because the set changes whenever Anthropic ships a model and a hardcoded list would be wrong in
+# whichever direction we guessed. Process-local and unbounded-by-design: it can only ever hold as
+# many entries as the workspace has distinct Anthropic models.
+_ANTHROPIC_NO_FORCED_TOOL: set[str] = set()
+
+
+def _rejects_forced_tool(exc: Exception) -> bool:
+    """Whether this is the provider saying "not that tool_choice", and nothing else.
+
+    Deliberately narrow. A broad match would turn every 400 — a malformed schema, a bad model
+    name, an oversized request — into a silent retry with weaker guarantees, which is worse than
+    failing: the turn would come back shaped differently and the agent would act on it.
+    """
+    if getattr(exc, "status_code", None) not in (400, None):
+        return False
+    text = str(exc).lower()
+    return "tool_choice" in text and ("not supported" in text or "unsupported" in text)
+
+
+def _json_object(text: str) -> dict | None:
+    """The first JSON object in a model's prose, or None.
+
+    Only needed on the "auto" path, where the model may answer in text rather than calling the
+    tool. Whatever comes back is still validated against the schema by the caller, so this is a
+    parsing convenience and not a second, weaker contract.
+    """
+    if not text:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        out = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    return out if isinstance(out, dict) else None
+
+
 def _anthropic(system: str, user: str, response_model: type[T], _temperature: float,
                model: str | None = None, *, api_key: str | None = None) -> T:
     """Claude via forced tool use — the provider's way of guaranteeing a schema-shaped result.
@@ -510,24 +551,50 @@ def _anthropic(system: str, user: str, response_model: type[T], _temperature: fl
         "description": "Return the answer in the required shape. You must call this tool.",
         "input_schema": response_model.model_json_schema(),
     }
-    # NOTE: no `temperature`. anthropic 1.x removed it from messages.create and the method
-    # takes no **kwargs, so passing it is a TypeError on every turn. Forced tool use already
-    # pins the output shape, which is all `temperature` was doing for us on the other brains.
-    resp = client.messages.create(
-        model=chosen,
-        max_tokens=ANTHROPIC_MAX_TOKENS,  # Anthropic requires an explicit output cap
-        system=system,
-        messages=[{"role": "user", "content": user}],
-        tools=[tool],
-        tool_choice={"type": "tool", "name": "respond"},
-    )
+
+    def call(forced: bool):
+        # NOTE: no `temperature`. anthropic 1.x removed it from messages.create and the method
+        # takes no **kwargs, so passing it is a TypeError on every turn. Forced tool use already
+        # pins the output shape, which is all `temperature` was doing for us on the other brains.
+        return client.messages.create(
+            model=chosen,
+            max_tokens=ANTHROPIC_MAX_TOKENS,  # Anthropic requires an explicit output cap
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "respond"} if forced else {"type": "auto"},
+        )
+
+    # Forcing the tool is the strong path: the model MUST answer by calling it, so the shape is
+    # guaranteed. But not every Claude model accepts a forced choice — the ones with extended
+    # thinking reject `tool_choice` of type "tool" or "any" with a 400 — and a workspace picking
+    # such a model got a hard failure on every single turn.
+    #
+    # So: force it where it works, remember where it does not, and fall back to "auto" for those.
+    # Remembered per model because the answer is a property of the model, and paying a rejected
+    # round trip on every turn to rediscover it is the kind of cost nobody sees until the bill.
+    forced = chosen not in _ANTHROPIC_NO_FORCED_TOOL
+    try:
+        resp = call(forced)
+    except Exception as exc:  # noqa: BLE001 - re-raised below unless it is THIS refusal
+        if not (forced and _rejects_forced_tool(exc)):
+            raise
+        log.info("anthropic: %s does not accept a forced tool choice; using auto", chosen)
+        _ANTHROPIC_NO_FORCED_TOOL.add(chosen)
+        resp = call(False)
+
     _u = getattr(resp, "usage", None)
     _note_usage("anthropic", chosen, getattr(_u, "input_tokens", None), getattr(_u, "output_tokens", None))
     for block in getattr(resp, "content", []) or []:
         if getattr(block, "type", None) == "tool_use":
             return response_model.model_validate(block.input)
-    # Forced tool_choice makes this unreachable in practice; treat it as a provider fault
-    # rather than returning a half-empty object the agent would act on.
+    # With a forced choice this is a provider fault. With "auto" the model was free to answer in
+    # prose instead, so try the text before giving up — the schema is still the contract, and
+    # model_validate below refuses anything that does not meet it.
+    text = "".join(getattr(b, "text", "") or "" for b in (getattr(resp, "content", []) or []))
+    parsed = _json_object(text)
+    if parsed is not None:
+        return response_model.model_validate(parsed)
     raise ValueError("anthropic returned no tool_use block")
 
 

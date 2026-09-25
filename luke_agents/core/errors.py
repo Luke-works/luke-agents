@@ -24,6 +24,8 @@ _BUSY = (
     "to another connected provider."
 )
 _UNAVAILABLE = "The AI service is temporarily unavailable. Please try again shortly."
+_BAD_REQUEST = ("Your AI provider refused this request — usually the chosen model cannot do what "
+                "this assistant needs. Pick a different model, or switch provider.")
 _REJECTED = ("Your AI provider rejected this workspace's API key. "
              "Reconnect your provider to keep using the assistant.")
 _EXHAUSTED = ("Your AI provider account is out of credit or over its quota. "
@@ -138,4 +140,14 @@ def brain_http_error(exc: Exception, *, busy_message: str | None = None) -> HTTP
     if isinstance(status, int) and 500 <= status < 600:
         # e.g. BrainUnavailable(status_code=503) — preserve the upstream class, generic body.
         return HTTPException(status_code=status, detail=_UNAVAILABLE)
+    # A 400 is the provider saying the REQUEST is wrong, which waiting does not fix. Reporting it
+    # as "temporarily unavailable; please retry shortly" sent someone into a retry loop against a
+    # permanent condition — a workspace on a model that refuses a forced tool choice saw exactly
+    # that, every turn, with nothing telling them the model was the problem.
+    #
+    # The provider's own text is not echoed (it can carry model ids and internal URLs), so this
+    # names the actionable part instead: something about this combination is not accepted, and
+    # the one lever the person has is the model.
+    if status == 400:
+        return HTTPException(status_code=422, detail=_BAD_REQUEST)
     return HTTPException(status_code=502, detail=_UNAVAILABLE)
