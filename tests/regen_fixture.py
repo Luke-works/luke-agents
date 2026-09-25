@@ -13,7 +13,7 @@ from pathlib import Path
 
 from tests.form_matrix import build_cases
 
-REVISION = "2026-08-01.1"
+REVISION = "2026-09-25.1"
 
 def main() -> None:
     out = Path(__file__).resolve().parents[1] / "fixtures" / "agent-schema-cases.json"

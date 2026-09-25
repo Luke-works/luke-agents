@@ -26,23 +26,77 @@ def _validate_schema_size(v: Optional[dict]) -> Optional[dict]:
 
 # coltorapps palette types we support generating. Choice types (select/radio/
 # selectBoxes) require an `options` list.
+#: Every type the agent may emit. Held to form-core's registry by tests/test_field_type_parity.py,
+#: which fails when the builder grows a type this list has not accounted for — the drift that let
+#: the agent tell a user "the builder only has basic field types" while they looked at a palette
+#: containing tabs, panels and a stepper.
 FieldType = Literal[
+    # ── text and contact ────────────────────────────────────────────────────
     "textField",
     "textarea",
-    "number",
+    "richText",
     "email",
     "phoneNumber",
+    "url",
+    "password",
+    "addressBlock",
+    # ── numbers, money, quantities ──────────────────────────────────────────
+    "number",
+    "currency",
+    "stepper",
+    "rating",
+    # ── choices ─────────────────────────────────────────────────────────────
     "checkbox",
     "select",
+    "searchSelect",
     "radio",
     "selectBoxes",
+    "tags",
+    "ranking",
+    "matrix",
+    # ── dates and times ─────────────────────────────────────────────────────
     "datetime",
-    "currency",
-    "addressBlock",
+    "day",
+    "time",
+    # ── uploads and marks ───────────────────────────────────────────────────
+    "file",
+    "signature",
+    # ── layout containers (hold `children`; see CONTAINER_TYPES) ────────────
+    "panel",
+    "fieldset",
+    "well",
+    "columns",
+    "tabs",
+    "table",
+    "wizard",
+    "page",
+    # ── static: no answer, just structure on the page ───────────────────────
+    "heading",
+    "content",
+    "divider",
     "button",
 ]
 
-CHOICE_TYPES = {"select", "radio", "selectBoxes"}
+CHOICE_TYPES = {"select", "searchSelect", "radio", "selectBoxes", "tags", "ranking"}
+
+#: Types that HOLD other fields. Only these may carry `children`, and they hold no value of their
+#: own. Kept in step with form-core's `isContainer` by the parity test: a container the agent
+#: treated as a leaf would silently drop everything inside it.
+CONTAINER_TYPES = {"panel", "fieldset", "well", "columns", "tabs", "table", "wizard", "page"}
+
+#: Types that render but collect nothing — a heading, a rule, a paragraph, the submit button.
+#: They take no `required`, no `key` that matters, and never appear in a submission.
+STATIC_TYPES = {"heading", "content", "divider", "button"}
+
+#: Containers whose children must themselves be containers, because each child IS a section and
+#: its label names that section. Verified against form-core, not assumed:
+#:   * `tabs`  -> `panel` children; the panel's label is the tab's label
+#:     (form-builder/src/palette.tsx seeds exactly two panels when you drop a Tabs).
+#:   * `wizard` -> `page` children; `wizardPages` in form-react filters children to `page` and a
+#:     wizard with none is not treated as a wizard at all (helpers.ts:166).
+#: Put a bare field straight under either and you get a tab strip with no tabs, or a wizard that
+#: silently renders as an ordinary form.
+SECTIONED_CONTAINERS = {"tabs": "panel", "wizard": "page"}
 
 
 class SpecLogicRule(BaseModel):
@@ -71,6 +125,13 @@ class SpecField(BaseModel):
     options: Optional[List[str]] = PydField(
         default=None, description="Choices for select/radio/selectBoxes; null otherwise"
     )
+    children: Optional[List["SpecField"]] = PydField(
+        default=None,
+        description="The fields INSIDE a layout container (panel, fieldset, well, columns, tabs, "
+        "table, wizard, page). Null for every ordinary field. A container holds no answer of its "
+        "own — it groups. Tabs take `panel` children (each panel's label is its tab); a wizard "
+        "takes `page` children (each page is a step). Nest only as deep as the form needs.",
+    )
     placeholder: Optional[str] = PydField(
         default=None, description="Faint example text INSIDE the input; text-like types only"
     )
@@ -97,6 +158,9 @@ class SpecField(BaseModel):
     )
 
 
+SpecField.model_rebuild()  # `children` refers to SpecField itself
+
+
 class FormSpec(BaseModel):
     title: str = "Untitled Form"
     fields: List[SpecField] = PydField(default_factory=list)
@@ -107,6 +171,13 @@ class FormOp(BaseModel):
     change — fields it doesn't mention get no op and are left byte-for-byte intact.
     """
     op: Literal["add", "update", "remove", "reorder", "retitle"]
+    parent: Optional[str] = PydField(
+        default=None,
+        description="For 'add'/'reorder': the KEY of the layout container to act inside (a panel, "
+        "a tab's panel, a wizard page). Null means the top level of the form. Only meaningful "
+        "when that key names a container; 'update' and 'remove' find their target wherever it is "
+        "and need no parent.",
+    )
     field: Optional[SpecField] = PydField(
         default=None,
         description="For 'add'/'update': the COMPLETE field after the change. For "
@@ -140,6 +211,15 @@ class AssistantTurn(BaseModel):
         default_factory=list,
         description="2-4 short, actionable next-step ideas as imperatives, e.g. "
         "'Add a phone number'. Each under ~6 words.",
+    )
+    research: Optional[str] = PydField(
+        default=None,
+        description="Set ONLY when building the form correctly needs a fact you do not have and "
+        "cannot reason out: a named real-world business's menu or price list, a published "
+        "standard's required fields, current rates. Put the SEARCH QUERY here (e.g. 'Savera "
+        "Indian Kitchen Irving Texas takeout menu with prices'), leave `operations` EMPTY, and "
+        "you will be called again with what was found. Do NOT set it to look up something you "
+        "already know, and never guess the facts instead of asking. Null for everything else.",
     )
     action: Optional[Literal["checkin", "publish", "undo_checkout"]] = PydField(
         default=None,
@@ -202,6 +282,10 @@ class ChatResponse(BaseModel):
     action: Optional[str] = None  # lifecycle intent the app should run: checkin|publish|undo_checkout
     brain: str  # which LLM produced this ("groq" | "gemini" | "ollama")
     turn_id: Optional[str] = None  # transcript id; echo to /feedback to label this turn
+    #: Web pages this turn was built from, when it did any research. Shown to the author so the
+    #: form can be CHECKED: a menu scraped off the web can be out of date, and a wrong price
+    #: becomes a real order at the wrong money. Empty for every ordinary turn.
+    sources: List[dict] = []
 
 
 class FeedbackRequest(BaseModel):

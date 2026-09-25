@@ -26,16 +26,18 @@ import re
 import unicodedata
 import uuid
 
-from .schema import CHOICE_TYPES, FormSpec, SpecField
+from typing import get_args
 
-# coltorapps leaf field types we let the LLM build/edit. Anything else
-# (containers, content, file/signature/tags/etc.) is preserved untouched.
-# All of these accept `label` and `key`.
-KNOWN_FIELD_TYPES = {
-    "textField", "textarea", "number", "email", "phoneNumber",
-    "checkbox", "select", "radio", "selectBoxes", "datetime", "currency",
-    "addressBlock", "button",
-}
+from .schema import (CHOICE_TYPES, CONTAINER_TYPES, STATIC_TYPES, FieldType, FormSpec,
+                     SpecField)
+
+# DERIVED, never re-listed. This was a second hand-written copy of the same set as
+# `FieldType`, and the two drifted apart exactly as you would expect: on 2026-09-25 both still
+# held 13 types while form-core offered 48, so the agent told a user the builder had "no layout
+# containers like tabs or panels and no dedicated stepper control" while they were looking at all
+# three. Adding a type in one place and not the other is the whole bug; there is now one place.
+# `FieldType` in turn is held to form-core's registry by tests/test_field_type_parity.py.
+KNOWN_FIELD_TYPES = set(get_args(FieldType))
 
 # The standard Lukeflow geocoding provider for the structured address field. An `addressBlock`
 # becomes a type-ahead autocomplete (street → fills city/region/postal/country) when it names a
@@ -45,12 +47,14 @@ ADDRESS_DATA_SOURCE = {"minion": "geocode"}
 # Types whose coltorapps definition includes `placeholderAttribute`. Setting
 # `placeholder` on any other type produces an "Unknown entity attribute" schema.
 PLACEHOLDER_TYPES = {
-    "textField", "textarea", "number", "email", "phoneNumber", "currency", "select",
+    "textField", "textarea", "number", "email", "phoneNumber", "url", "password",
+    "currency", "select", "searchSelect", "tags",
 }
 
-# `button` is the odd one out: its attributes are only label/key/class/hidden/
-# disabled — no `required`, `placeholder`, or `options`.
-NO_REQUIRED_TYPES = {"button"}
+# Types that collect no answer, so `required` / `placeholder` / `options` / help text are
+# meaningless on them — a `required` heading is a schema form-core rejects. `button` was the
+# original member; the other statics arrived with the rest of the registry.
+NO_REQUIRED_TYPES = set(STATIC_TYPES) | set(CONTAINER_TYPES)
 
 
 # ── Data-key safety ───────────────────────────────────────────────────────────
@@ -163,36 +167,65 @@ def schema_to_spec(schema: dict | None) -> tuple[FormSpec, dict, dict, list]:
     simple_ids: set = set()
     preserved_root_ids: list = []
 
-    for eid in root:
+    def project(eid) -> SpecField | None:
+        """One entity as a SpecField, recursing into a container's children — or None when this
+        is something the agent cannot represent, which the caller then preserves verbatim.
+
+        Recursion is what makes an edit possible at all. Carried through untouched instead, a
+        container and everything in it is INVISIBLE to the model: it would build tabs, then on the
+        very next turn report that the form has no tabs and be unable to touch a single item
+        inside them."""
         ent = entities.get(eid)
         if not isinstance(ent, dict):
-            continue
+            return None
         etype = ent.get("type", "")
         attrs = ent.get("attributes", {}) or {}
-        is_leaf = not ent.get("children")
-        if etype in KNOWN_FIELD_TYPES and is_leaf:
+        kids = ent.get("children") or []
+
+        if etype in CONTAINER_TYPES:
+            projected = [project(cid) for cid in kids]
+            if any(p is None for p in projected):
+                return None  # something inside is unrepresentable — keep the WHOLE subtree intact
             key = str(attrs.get("key") or eid)
-            opts = attrs.get("options")
-            fields.append(
-                SpecField(
-                    key=key,
-                    label=str(attrs.get("label", key)),
-                    type=etype,  # type: ignore[arg-type]
-                    required=bool(attrs.get("required", False)),
-                    options=list(opts) if isinstance(opts, list) else None,
-                    placeholder=attrs.get("placeholder"),
-                    tooltip=attrs.get("tooltip"),
-                    description=attrs.get("description"),
-                    hidden=attrs.get("hidden") if isinstance(attrs.get("hidden"), bool) else None,
-                    disabled=attrs.get("disabled") if isinstance(attrs.get("disabled"), bool) else None,
-                    logic=_safe_logic(attrs.get("logic")),
-                    calculate_value=attrs.get("calculateValue") if isinstance(attrs.get("calculateValue"), str) else None,
-                )
-            )
             existing[key] = {"id": eid, "type": etype, "attributes": dict(attrs)}
             simple_ids.add(eid)
-        else:
+            return SpecField(
+                key=key,
+                label=str(attrs.get("label", key)),
+                type=etype,  # type: ignore[arg-type]
+                children=projected,  # type: ignore[arg-type]
+                hidden=attrs.get("hidden") if isinstance(attrs.get("hidden"), bool) else None,
+                logic=_safe_logic(attrs.get("logic")),
+            )
+
+        if etype not in KNOWN_FIELD_TYPES or kids:
+            return None  # unknown type, or a container we do not model: preserve it
+
+        key = str(attrs.get("key") or eid)
+        opts = attrs.get("options")
+        existing[key] = {"id": eid, "type": etype, "attributes": dict(attrs)}
+        simple_ids.add(eid)
+        return SpecField(
+            key=key,
+            label=str(attrs.get("label", key)),
+            type=etype,  # type: ignore[arg-type]
+            required=bool(attrs.get("required", False)),
+            options=list(opts) if isinstance(opts, list) else None,
+            placeholder=attrs.get("placeholder"),
+            tooltip=attrs.get("tooltip"),
+            description=attrs.get("description"),
+            hidden=attrs.get("hidden") if isinstance(attrs.get("hidden"), bool) else None,
+            disabled=attrs.get("disabled") if isinstance(attrs.get("disabled"), bool) else None,
+            logic=_safe_logic(attrs.get("logic")),
+            calculate_value=attrs.get("calculateValue") if isinstance(attrs.get("calculateValue"), str) else None,
+        )
+
+    for eid in root:
+        field = project(eid)
+        if field is None:
             preserved_root_ids.append(eid)
+        else:
+            fields.append(field)
 
     # Preserve every entity that isn't a rebuilt simple field — this includes
     # containers AND their nested children (which never appear in `root`).
@@ -225,7 +258,12 @@ def spec_to_schema(
     # a panel child of the same name and form-core would reject BOTH as duplicate-key.
     taken_keys: set[str] = _collect_keys(preserved_entities)
 
-    for f in spec.fields:
+    def emit(f, parent_id=None) -> str:
+        """Render one field (and, for a container, everything inside it) and return its id.
+
+        Recursive because a container is a field that holds fields: the schema nests by ID —
+        `children: [id]` on the parent, `parentId` on each child — so a subtree is emitted
+        bottom-up and wired by reference, never by embedding."""
         # Look the previous entity up by the key the LLM used, BEFORE normalising: that is the key
         # it saw in the projection, and matching on it is what preserves the entity id and its
         # advanced attributes across an edit.
@@ -289,8 +327,22 @@ def spec_to_schema(
         if f.calculate_value is not None and f.type not in NO_REQUIRED_TYPES:
             attrs["calculateValue"] = f.calculate_value
 
-        entities[eid] = {"type": f.type, "attributes": attrs}
-        root.append(eid)
+        ent = {"type": f.type, "attributes": attrs}
+        if parent_id is not None:
+            ent["parentId"] = parent_id
+        # A container holds no answer, so the value-shaped attributes above are meaningless on it;
+        # `required` on a panel in particular makes form-core reject the schema.
+        if f.type in CONTAINER_TYPES:
+            for gone in ("required", "placeholder", "options", "dataSource", "calculateValue"):
+                ent["attributes"].pop(gone, None)
+            entities[eid] = ent  # registered BEFORE the children, so a child can point back at it
+            ent["children"] = [emit(c, eid) for c in (f.children or [])]
+        else:
+            entities[eid] = ent
+        return eid
+
+    for f in spec.fields:
+        root.append(emit(f))
 
     # Carry every preserved entity through unchanged (containers + their children).
     for eid, ent in preserved_entities.items():

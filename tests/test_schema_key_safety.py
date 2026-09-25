@@ -122,20 +122,50 @@ def test_duplicate_keys_are_suffixed_in_order():
 
 
 def test_an_existing_nested_child_keeps_its_key_and_the_new_field_yields():
+    """A container's children share the submission namespace with top-level fields, so a new
+    field named after one of them must yield — and the EXISTING child must be the one that keeps
+    the plain key, because data already lives under it.
+
+    Panels are projected into the spec now rather than carried past the model, so the realistic
+    turn is the model keeping what it was shown and appending: the dedupe has to work across the
+    recursion, not just against a set of entities the model never saw."""
     from tests.form_matrix import _panel_schema
     from luke_agents.agents.form_agent.coltorapps import schema_to_spec
 
-    _, existing, pres, pres_root = schema_to_spec(_panel_schema())
+    spec, existing, pres, pres_root = schema_to_spec(_panel_schema())
+    assert [f.type for f in spec.fields] == ["panel"], "the panel must be visible to edit at all"
+    spec.fields.append(SpecField(key="inner", label="Clash"))
+    schema = spec_to_schema(spec, existing=existing, preserved_entities=pres, preserved_root_ids=pres_root)
+
+    keys = _keys(schema)
+    assert "inner" in keys and "inner_2" in keys, keys
+    inner_owner = [e for e in schema["entities"].values() if (e.get("attributes") or {}).get("key") == "inner"]
+    assert inner_owner[0]["attributes"]["label"] == "Inner"
+
+
+def test_a_container_the_agent_cannot_model_still_reserves_its_children_keys():
+    """`dataGrid` is a ROW TEMPLATE, not a section, so it stays preserved verbatim and invisible.
+    Its children still occupy the submission namespace, and a top-level field that collided with
+    one would make form-core reject BOTH as duplicate keys — blocking publish on a form the
+    person was told was fine."""
+    from luke_agents.agents.form_agent.coltorapps import schema_to_spec
+
+    grid = {
+        "entities": {
+            "g": {"type": "dataGrid", "attributes": {"label": "Rows", "key": "rows"}, "children": ["c"]},
+            "c": {"type": "textField", "attributes": {"label": "Inner", "key": "inner"}, "parentId": "g"},
+        },
+        "root": ["g"],
+    }
+    spec, existing, pres, pres_root = schema_to_spec(grid)
+    assert spec.fields == [], "a dataGrid must not be projected — its children are columns"
+    assert set(pres) == {"g", "c"}, "the whole subtree stays intact"
+
     schema = spec_to_schema(
         FormSpec(fields=[SpecField(key="inner", label="Clash")]),
         existing=existing, preserved_entities=pres, preserved_root_ids=pres_root,
     )
-    keys = _keys(schema)
-    assert "inner" in keys and "inner_2" in keys, keys
-    # The PRESERVED child must be the one that kept `inner` — renaming it would silently move
-    # data that already exists under that key.
-    inner_owner = [e for e in schema["entities"].values() if (e.get("attributes") or {}).get("key") == "inner"]
-    assert inner_owner[0]["attributes"]["label"] == "Inner"
+    assert "inner_2" in _keys(schema), _keys(schema)
 
 
 def test_a_valid_author_chosen_key_is_left_alone():
