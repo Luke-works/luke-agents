@@ -544,6 +544,12 @@ class PostgresStore(TranscriptStore):
 
         if not self._ready:
             self.init()
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+        # The only interpolation is `self.schema`, a SQL IDENTIFIER — those cannot be bound as
+        # parameters in any driver, so a literal is the only way to name a schema. It is checked
+        # against `_IDENT` in __init__ and the constructor refuses anything else, so by the time
+        # it reaches here it is `[A-Za-z_][A-Za-z0-9_]*` and nothing else. Every caller-supplied
+        # value below — `agent`, `days` — is bound, which is what the rule is actually for.
         sql = f"""
             SELECT model,
                    count(*)                                           AS samples,
