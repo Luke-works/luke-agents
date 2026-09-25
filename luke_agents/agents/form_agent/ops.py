@@ -11,7 +11,7 @@ from __future__ import annotations
 import typing
 from typing import List
 
-from .schema import FieldType, FormOp, FormSpec, SpecField
+from .schema import CONTAINER_TYPES, FieldType, FormOp, FormSpec, SpecField
 
 # The exact set of field types we know how to render (the coltorapps palette). Pydantic
 # already constrains `SpecField.type` to this Literal, but we re-derive the allowlist and
@@ -44,13 +44,39 @@ def apply_operations(current: FormSpec, operations: List[FormOp]) -> FormSpec:
     fields: list[SpecField] = list(current.fields)
     title = current.title
 
-    def index_of(key: str | None) -> int:
+    def locate(key: str | None, where: list[SpecField] | None = None):
+        """Find `key` ANYWHERE in the tree, as the (list, index) that holds it.
+
+        A flat scan of the top level was enough while the agent could not build containers. Now
+        that it can, a field inside a tab is a field the model must be able to edit: a top-level
+        search would miss it, `update` would fall through to appending a duplicate outside the
+        container, and `remove` would quietly do nothing."""
         if not key:
-            return -1
-        for i, f in enumerate(fields):
+            return None
+        where = fields if where is None else where
+        for i, f in enumerate(where):
             if f.key == key:
-                return i
-        return -1
+                return where, i
+            if f.children:
+                hit = locate(key, f.children)
+                if hit is not None:
+                    return hit
+        return None
+
+    def container_children(key: str | None) -> list[SpecField] | None:
+        """The child list of the container named `key`, or None for "the top level"."""
+        if not key:
+            return None
+        hit = locate(key)
+        if hit is None:
+            return None
+        holder, i = hit
+        parent = holder[i]
+        if parent.type not in CONTAINER_TYPES:
+            return None  # asked to nest inside something that cannot hold fields
+        if parent.children is None:
+            parent.children = []
+        return parent.children
 
     for op in operations:
         if op.op == "retitle":
@@ -60,15 +86,21 @@ def apply_operations(current: FormSpec, operations: List[FormOp]) -> FormSpec:
         elif op.op == "add":
             if op.field is None:
                 continue
-            existing = index_of(op.field.key)
-            if existing >= 0:
-                fields[existing] = op.field  # key already present → treat as in-place replace
+            existing = locate(op.field.key)
+            if existing is not None:
+                holder, i = existing
+                holder[i] = op.field  # key already present → treat as in-place replace
             else:
-                after = index_of(op.after)
-                if after >= 0:
-                    fields.insert(after + 1, op.field)
+                after = locate(op.after)
+                if after is not None:
+                    holder, i = after
+                    holder.insert(i + 1, op.field)
                 else:
-                    fields.append(op.field)
+                    # `parent` names the container to drop it into; absent — or naming something
+                    # that cannot hold fields — it goes to the top level, which is what every
+                    # op meant before containers existed.
+                    into = container_children(op.parent)
+                    (fields if into is None else into).append(op.field)
 
         elif op.op == "update":
             if op.field is None:
@@ -76,23 +108,37 @@ def apply_operations(current: FormSpec, operations: List[FormOp]) -> FormSpec:
             # Target the explicit key if given, else the field's own key. Keep
             # position; replacing in place preserves the entity id on render
             # (spec_to_schema matches by key) as long as the key is unchanged.
-            target = index_of(op.key) if op.key else index_of(op.field.key)
-            if target >= 0:
-                fields[target] = op.field
+            target = locate(op.key) if op.key else locate(op.field.key)
+            if target is not None:
+                holder, i = target
+                # Carry the existing children across when the model omits them: an `update` that
+                # renames a panel must not empty it.
+                if op.field.children is None and holder[i].children and op.field.type in CONTAINER_TYPES:
+                    op.field.children = holder[i].children
+                holder[i] = op.field
             else:
                 fields.append(op.field)  # unknown target → add it
 
         elif op.op == "remove":
-            target = index_of(op.key or (op.field.key if op.field else None))
-            if target >= 0:
-                del fields[target]
+            target = locate(op.key or (op.field.key if op.field else None))
+            if target is not None:
+                holder, i = target
+                del holder[i]  # a container goes with everything inside it, as the person expects
 
         elif op.op == "reorder":
             if op.order:
-                wanted = [k for k in op.order if index_of(k) >= 0]
+                # Reorder within ONE list: the top level, or the named container's children.
+                scope = container_children(op.parent) if op.parent else fields
+                if scope is None:
+                    scope = fields
+                by_key = {f.key: f for f in scope}
+                wanted = [k for k in op.order if k in by_key]
                 seen = set(wanted)
-                rest = [f.key for f in fields if f.key not in seen]  # keep unmentioned at the end
-                by_key = {f.key: f for f in fields}
-                fields = [by_key[k] for k in (wanted + rest)]
+                rest = [f.key for f in scope if f.key not in seen]  # unmentioned keep their place
+                ordered = [by_key[k] for k in (wanted + rest)]
+                if scope is fields:
+                    fields = ordered
+                else:
+                    scope[:] = ordered
 
     return FormSpec(title=title, fields=fields)

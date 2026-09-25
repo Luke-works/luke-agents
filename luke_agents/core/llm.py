@@ -119,6 +119,23 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 # worker is freed.
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 
+# Web research (see `research`). A cap, not a budget: the providers bill per search — Anthropic
+# publishes $10 per 1,000 — and an uncapped agent that decides to "check a few more sources" spends
+# a workspace's money without anyone watching. Three is enough for "what is on this restaurant's
+# menu" and small enough that a runaway turn is a rounding error.
+#
+# HONEST LIMIT: enforceable on Anthropic (`max_uses` on the tool) and OpenAI (`max_tool_calls` on
+# the request). Gemini has NO equivalent — `types.GoogleSearch` exposes only search_types,
+# blocking_confidence, exclude_domains and time_range_filter — so on Gemini a turn is bounded by
+# RESEARCH_TIMEOUT_SECONDS and RESEARCH_MAX_TOKENS and not by a number of searches. Claiming
+# otherwise in a comment would be worse than the gap.
+RESEARCH_MAX_USES = int(os.getenv("RESEARCH_MAX_USES", "3"))
+# Research reads whole web pages, so it needs more room than a form-schema turn and more time than
+# a single completion: the provider runs several searches inside one call.
+RESEARCH_MAX_TOKENS = int(os.getenv("RESEARCH_MAX_TOKENS", "4096"))
+RESEARCH_TIMEOUT_SECONDS = float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "90"))
+
+
 # Transient-retry + a lightweight per-brain circuit breaker (#24). A single blip (timeout, 5xx,
 # dropped connection) on the active brain used to surface straight to the user as a 502; now the
 # call is retried with backoff, and if a brain fails repeatedly the breaker opens to fail fast
@@ -396,6 +413,189 @@ def generate(
         return _run_brain(brain, lambda: _gemini(system, user, response_model, temperature, chosen,
                                                  api_key=api_key), scope)
     return _run_brain(brain, lambda: _ollama(system, user, response_model, temperature, chosen), scope)
+
+
+@dataclass(frozen=True)
+class Research:
+    """What a web-research pass found: prose for the model, sources for the person."""
+
+    text: str
+    #: ``{"url", "title"}`` per cited source, in the order the provider returned them.
+    sources: list[dict]
+
+
+#: Providers with a FIRST-PARTY search tool. Groq and Ollama have none, and giving them one would
+#: mean holding a search vendor's key ourselves - which breaks the rule that the work runs on the
+#: workspace's account, not ours. They simply build without research, exactly as before.
+RESEARCH_BRAINS = frozenset({"anthropic", "openai", "gemini"})
+
+RESEARCH_SYSTEM = (
+    "You are researching a specific factual question so that a colleague can build a form from "
+    "the answer. Search the web when the question depends on current or local facts you cannot "
+    "know; answer directly when it does not.\n\n"
+    "Report ONLY what the sources actually say. If you cannot find something - a menu, a price, "
+    "opening hours - say so plainly instead of producing a plausible substitute; an invented menu "
+    "item becomes a real order nobody can fulfil. Prefer the business's own site over aggregators, "
+    "and note when a source looks out of date.\n\n"
+    "Structure the answer for someone turning it into form fields: group related items, and give "
+    "exact names and prices as written."
+)
+
+
+def research_supported(brain: str | None = None) -> bool:
+    """Can this request's brain reach the web at all? Callers use it to skip the ask."""
+    return (brain or active_brain()) in RESEARCH_BRAINS
+
+
+def research(query: str) -> "Research | None":
+    """Answer `query` from the live web, or None when this brain cannot search.
+
+    Deliberately NOT part of :func:`generate`. Every brain's structured path pins the output
+    shape - Anthropic by forcing a tool, OpenAI via Structured Outputs, Gemini via
+    ``response_schema`` - and a pinned shape is exactly what stops a model searching first: under
+    a forced ``tool_choice`` the only legal move is to answer. Gemini goes further and rejects a
+    search tool and ``response_schema`` in the same call outright.
+
+    So research is its own call, with a search tool and NO schema, and its prose is fed into the
+    ordinary build turn as context. The build keeps its guarantee, the research gets the web, and
+    neither compromises for the other.
+
+    Never raises. A failed search means the model answers from training data, which is what it did
+    before this existed - strictly better than failing a turn the user asked for.
+    """
+    if not query or not query.strip():
+        return None
+    brain = active_brain()
+    if not research_supported(brain):
+        return None
+    cred = _credential()
+    if cred is None:
+        from .credential import require_credential
+
+        if require_credential():
+            return None
+        api_key, chosen = _env_key(brain), _default_model(brain)
+    else:
+        api_key, chosen = cred.api_key, (cred.model or _default_model(brain))
+
+    try:
+        if brain == "anthropic":
+            return _research_anthropic(query, chosen, api_key)
+        if brain == "openai":
+            return _research_openai(query, chosen, api_key)
+        return _research_gemini(query, chosen, api_key)
+    except Exception as exc:  # noqa: BLE001 - research is an enhancement, never a failure mode
+        log.warning("research: %s search failed, building without it: %s", brain, exc)
+        return None
+
+
+def _research_anthropic(query: str, model: str, api_key: str | None) -> "Research | None":
+    """Claude with Anthropic's server-side search: it runs the searches and returns cited prose."""
+    from anthropic import Anthropic
+
+    client = _cached_client(_client_key("anthropic-research", api_key),
+                            lambda: Anthropic(api_key=api_key, timeout=RESEARCH_TIMEOUT_SECONDS))
+    resp = client.messages.create(
+        model=model,
+        max_tokens=RESEARCH_MAX_TOKENS,
+        system=RESEARCH_SYSTEM,
+        messages=[{"role": "user", "content": query}],
+        # No `tool_choice`: the model decides whether this question needs the web at all, so a
+        # form that needs no outside facts costs one cheap completion instead of a search.
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": RESEARCH_MAX_USES}],
+    )
+    text, sources = [], []
+    for part in resp.content:
+        if getattr(part, "type", None) != "text":
+            continue
+        text.append(part.text)
+        for cite in (getattr(part, "citations", None) or []):
+            url = getattr(cite, "url", None)
+            if url:
+                sources.append({"url": url, "title": getattr(cite, "title", None) or url})
+    _u = getattr(resp, "usage", None)
+    _note_usage("anthropic", model, getattr(_u, "input_tokens", None), getattr(_u, "output_tokens", None))
+    return _finish(" ".join(t.strip() for t in text if t.strip()), sources)
+
+
+def _research_openai(query: str, model: str, api_key: str | None) -> "Research | None":
+    """OpenAI's ``web_search`` lives on the RESPONSES API, not the chat-completions call the build
+    turn uses - chat completions only searches on the dedicated ``*-search-preview`` models. A
+    separate research call is what makes that difference invisible to the agent."""
+    from openai import OpenAI
+
+    client = _cached_client(_client_key("openai-research", api_key),
+                            lambda: OpenAI(api_key=api_key, timeout=RESEARCH_TIMEOUT_SECONDS))
+    resp = client.responses.create(
+        model=model,
+        instructions=RESEARCH_SYSTEM,
+        input=query,
+        tools=[{"type": "web_search"}],
+        max_output_tokens=RESEARCH_MAX_TOKENS,
+        # OpenAI's cap is on the REQUEST, not the tool — the same ceiling as Anthropic's
+        # `max_uses`, spelled differently.
+        max_tool_calls=RESEARCH_MAX_USES,
+    )
+    sources = []
+    for item in (getattr(resp, "output", None) or []):
+        for part in (getattr(item, "content", None) or []):
+            for ann in (getattr(part, "annotations", None) or []):
+                url = getattr(ann, "url", None)
+                if url:
+                    sources.append({"url": url, "title": getattr(ann, "title", None) or url})
+    _u = getattr(resp, "usage", None)
+    _note_usage("openai", model, getattr(_u, "input_tokens", None), getattr(_u, "output_tokens", None))
+    return _finish(getattr(resp, "output_text", "") or "", sources)
+
+
+def _research_gemini(query: str, model: str, api_key: str | None) -> "Research | None":
+    """Gemini grounded on Google Search. NOTE: grounding and ``response_schema`` are mutually
+    exclusive on this API, so this call sends no schema at all - the reason research is a separate
+    pass rather than a flag on the build turn."""
+    from google import genai
+    from google.genai import types
+
+    client = _cached_client(_client_key("gemini-research", api_key), lambda: genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(RESEARCH_TIMEOUT_SECONDS * 1000)),
+    ))
+    resp = client.models.generate_content(
+        model=model,
+        contents=query,
+        config=types.GenerateContentConfig(
+            system_instruction=RESEARCH_SYSTEM,
+            # No search cap exists on this API (see RESEARCH_MAX_USES); the output ceiling and the
+            # client timeout are what bound a Gemini research turn.
+            max_output_tokens=RESEARCH_MAX_TOKENS,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        ),
+    )
+    sources = []
+    for cand in (getattr(resp, "candidates", None) or []):
+        meta = getattr(cand, "grounding_metadata", None)
+        for chunk in (getattr(meta, "grounding_chunks", None) or []) if meta else []:
+            web = getattr(chunk, "web", None)
+            url = getattr(web, "uri", None) if web else None
+            if url:
+                sources.append({"url": url, "title": getattr(web, "title", None) or url})
+    _u = getattr(resp, "usage_metadata", None)
+    _note_usage("gemini", model, getattr(_u, "prompt_token_count", None),
+                getattr(_u, "candidates_token_count", None))
+    return _finish(getattr(resp, "text", "") or "", sources)
+
+
+def _finish(text: str, sources: list[dict]) -> "Research | None":
+    """Empty findings are NOT findings. Returning a Research with no text would put an empty
+    "here is what I found" section in the build prompt, which reads to the model as "the web says
+    nothing about this" rather than "the search did not happen"."""
+    if not text.strip():
+        return None
+    seen, unique = set(), []
+    for src in sources:  # a page cited five times is one source to the person reading the form
+        if src["url"] not in seen:
+            seen.add(src["url"])
+            unique.append(src)
+    return Research(text=text.strip(), sources=unique)
 
 
 def _client_key(brain: str, api_key: str | None) -> str:

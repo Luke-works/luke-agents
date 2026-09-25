@@ -1,6 +1,6 @@
 {
  "_comment": "Schemas rendered by luke-agents' form agent (tests/form_matrix.py), validated in luke-forms by form-core's real validateSchema. Regenerate with `python -m tests.regen_fixture` and copy into luke-forms/fixtures/.",
- "revision": "2026-08-01.1",
+ "revision": "2026-09-25.1",
  "cases": [
   {
    "name": "bare:textField",
@@ -39,11 +39,11 @@
    }
   },
   {
-   "name": "bare:number",
+   "name": "bare:richText",
    "schema": {
     "entities": {
-     "203e1248-6ae8-51e7-bacc-6bda43d06b66": {
-      "type": "number",
+     "de5da4ed-f772-544f-92f0-637051648b13": {
+      "type": "richText",
       "attributes": {
        "label": "F",
        "key": "f1",
@@ -52,7 +52,7 @@
      }
     },
     "root": [
-     "203e1248-6ae8-51e7-bacc-6bda43d06b66"
+     "de5da4ed-f772-544f-92f0-637051648b13"
     ]
    }
   },
@@ -93,6 +93,135 @@
    }
   },
   {
+   "name": "bare:url",
+   "schema": {
+    "entities": {
+     "4892096d-081f-522c-afaf-46970522f630": {
+      "type": "url",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "4892096d-081f-522c-afaf-46970522f630"
+    ]
+   }
+  },
+  {
+   "name": "bare:password",
+   "schema": {
+    "entities": {
+     "46012590-669c-549f-bdd1-03b304bf614b": {
+      "type": "password",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "46012590-669c-549f-bdd1-03b304bf614b"
+    ]
+   }
+  },
+  {
+   "name": "bare:addressBlock",
+   "schema": {
+    "entities": {
+     "0a026a71-c417-532c-a2f6-4e90e7d8bd85": {
+      "type": "addressBlock",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false,
+       "dataSource": {
+        "minion": "geocode"
+       }
+      }
+     }
+    },
+    "root": [
+     "0a026a71-c417-532c-a2f6-4e90e7d8bd85"
+    ]
+   }
+  },
+  {
+   "name": "bare:number",
+   "schema": {
+    "entities": {
+     "203e1248-6ae8-51e7-bacc-6bda43d06b66": {
+      "type": "number",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "203e1248-6ae8-51e7-bacc-6bda43d06b66"
+    ]
+   }
+  },
+  {
+   "name": "bare:currency",
+   "schema": {
+    "entities": {
+     "e74fe44e-85b3-5e64-9fee-9323e29cee4e": {
+      "type": "currency",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "e74fe44e-85b3-5e64-9fee-9323e29cee4e"
+    ]
+   }
+  },
+  {
+   "name": "bare:stepper",
+   "schema": {
+    "entities": {
+     "bcd39d8e-c90f-5f60-a7c1-5767d5b79ec0": {
+      "type": "stepper",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "bcd39d8e-c90f-5f60-a7c1-5767d5b79ec0"
+    ]
+   }
+  },
+  {
+   "name": "bare:rating",
+   "schema": {
+    "entities": {
+     "070471bd-9795-5e29-91fd-17f4acf2649b": {
+      "type": "rating",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "070471bd-9795-5e29-91fd-17f4acf2649b"
+    ]
+   }
+  },
+  {
    "name": "bare:checkbox",
    "schema": {
     "entities": {
@@ -128,6 +257,27 @@
     },
     "root": [
      "81616caf-9a40-5cc2-b329-e3bd1eb2d780"
+    ]
+   }
+  },
+  {
+   "name": "bare:searchSelect",
+   "schema": {
+    "entities": {
+     "b7359dd1-008a-584b-b33c-8e74507db287": {
+      "type": "searchSelect",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false,
+       "options": [
+        "Option 1"
+       ]
+      }
+     }
+    },
+    "root": [
+     "b7359dd1-008a-584b-b33c-8e74507db287"
     ]
    }
   },
@@ -174,6 +324,66 @@
    }
   },
   {
+   "name": "bare:tags",
+   "schema": {
+    "entities": {
+     "bb08c649-fd4a-5f09-8c78-85c1418099be": {
+      "type": "tags",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false,
+       "options": [
+        "Option 1"
+       ]
+      }
+     }
+    },
+    "root": [
+     "bb08c649-fd4a-5f09-8c78-85c1418099be"
+    ]
+   }
+  },
+  {
+   "name": "bare:ranking",
+   "schema": {
+    "entities": {
+     "e24800c3-3259-5b8b-b612-39b9a6c58a5a": {
+      "type": "ranking",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false,
+       "options": [
+        "Option 1"
+       ]
+      }
+     }
+    },
+    "root": [
+     "e24800c3-3259-5b8b-b612-39b9a6c58a5a"
+    ]
+   }
+  },
+  {
+   "name": "bare:matrix",
+   "schema": {
+    "entities": {
+     "b42286aa-c14f-5117-aa88-c5b4bd30f0a7": {
+      "type": "matrix",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "b42286aa-c14f-5117-aa88-c5b4bd30f0a7"
+    ]
+   }
+  },
+  {
    "name": "bare:datetime",
    "schema": {
     "entities": {
@@ -192,11 +402,11 @@
    }
   },
   {
-   "name": "bare:currency",
+   "name": "bare:day",
    "schema": {
     "entities": {
-     "e74fe44e-85b3-5e64-9fee-9323e29cee4e": {
-      "type": "currency",
+     "07860c87-03b9-52a1-a86a-8137f6015393": {
+      "type": "day",
       "attributes": {
        "label": "F",
        "key": "f1",
@@ -205,28 +415,256 @@
      }
     },
     "root": [
-     "e74fe44e-85b3-5e64-9fee-9323e29cee4e"
+     "07860c87-03b9-52a1-a86a-8137f6015393"
     ]
    }
   },
   {
-   "name": "bare:addressBlock",
+   "name": "bare:time",
    "schema": {
     "entities": {
-     "0a026a71-c417-532c-a2f6-4e90e7d8bd85": {
-      "type": "addressBlock",
+     "fd7f73f2-acb6-502d-ac6f-266f1548ca90": {
+      "type": "time",
       "attributes": {
        "label": "F",
        "key": "f1",
-       "required": false,
-       "dataSource": {
-        "minion": "geocode"
-       }
+       "required": false
       }
      }
     },
     "root": [
-     "0a026a71-c417-532c-a2f6-4e90e7d8bd85"
+     "fd7f73f2-acb6-502d-ac6f-266f1548ca90"
+    ]
+   }
+  },
+  {
+   "name": "bare:file",
+   "schema": {
+    "entities": {
+     "a78ba9a0-0243-52f3-9171-a1e5d7c1681a": {
+      "type": "file",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "a78ba9a0-0243-52f3-9171-a1e5d7c1681a"
+    ]
+   }
+  },
+  {
+   "name": "bare:signature",
+   "schema": {
+    "entities": {
+     "48c0f9df-bcd7-507e-9ea2-1f16cd01602b": {
+      "type": "signature",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": false
+      }
+     }
+    },
+    "root": [
+     "48c0f9df-bcd7-507e-9ea2-1f16cd01602b"
+    ]
+   }
+  },
+  {
+   "name": "bare:panel",
+   "schema": {
+    "entities": {
+     "48a2edb9-85fc-5939-b549-ec110c74052f": {
+      "type": "panel",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "48a2edb9-85fc-5939-b549-ec110c74052f"
+    ]
+   }
+  },
+  {
+   "name": "bare:fieldset",
+   "schema": {
+    "entities": {
+     "65502a46-f4de-50ec-96aa-e56b5a402516": {
+      "type": "fieldset",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "65502a46-f4de-50ec-96aa-e56b5a402516"
+    ]
+   }
+  },
+  {
+   "name": "bare:well",
+   "schema": {
+    "entities": {
+     "d18bfd99-6993-50b8-809e-a972bb2d68f3": {
+      "type": "well",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "d18bfd99-6993-50b8-809e-a972bb2d68f3"
+    ]
+   }
+  },
+  {
+   "name": "bare:columns",
+   "schema": {
+    "entities": {
+     "907552fe-9713-5e2c-bb42-bea266e42db6": {
+      "type": "columns",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "907552fe-9713-5e2c-bb42-bea266e42db6"
+    ]
+   }
+  },
+  {
+   "name": "bare:tabs",
+   "schema": {
+    "entities": {
+     "5b8991d3-894e-55ce-b865-4e53d041d927": {
+      "type": "tabs",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "5b8991d3-894e-55ce-b865-4e53d041d927"
+    ]
+   }
+  },
+  {
+   "name": "bare:table",
+   "schema": {
+    "entities": {
+     "5c8d7821-c039-55e7-a88c-218c278048fe": {
+      "type": "table",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "5c8d7821-c039-55e7-a88c-218c278048fe"
+    ]
+   }
+  },
+  {
+   "name": "bare:wizard",
+   "schema": {
+    "entities": {
+     "c38e5347-47c9-562a-b298-86f06d2587aa": {
+      "type": "wizard",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "c38e5347-47c9-562a-b298-86f06d2587aa"
+    ]
+   }
+  },
+  {
+   "name": "bare:page",
+   "schema": {
+    "entities": {
+     "da8c7117-1b70-55a9-9ce0-489ceaff848f": {
+      "type": "page",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "da8c7117-1b70-55a9-9ce0-489ceaff848f"
+    ]
+   }
+  },
+  {
+   "name": "bare:heading",
+   "schema": {
+    "entities": {
+     "b6545319-5913-5075-8f26-a0a387b81c50": {
+      "type": "heading",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      }
+     }
+    },
+    "root": [
+     "b6545319-5913-5075-8f26-a0a387b81c50"
+    ]
+   }
+  },
+  {
+   "name": "bare:content",
+   "schema": {
+    "entities": {
+     "4b7fb431-e2d3-5360-8a92-c1909302d984": {
+      "type": "content",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      }
+     }
+    },
+    "root": [
+     "4b7fb431-e2d3-5360-8a92-c1909302d984"
+    ]
+   }
+  },
+  {
+   "name": "bare:divider",
+   "schema": {
+    "entities": {
+     "9899bc4b-e71e-531c-88b8-c7c2bc2ac5f0": {
+      "type": "divider",
+      "attributes": {
+       "label": "F",
+       "key": "f1"
+      }
+     }
+    },
+    "root": [
+     "9899bc4b-e71e-531c-88b8-c7c2bc2ac5f0"
     ]
    }
   },
@@ -308,16 +746,15 @@
    }
   },
   {
-   "name": "loaded:number",
+   "name": "loaded:richText",
    "schema": {
     "entities": {
-     "07e84405-d074-5102-9dc2-55f6f1a13f2d": {
-      "type": "number",
+     "e0b5dcd6-2df7-58b7-bf27-5d6a05a5e2b0": {
+      "type": "richText",
       "attributes": {
        "label": "F",
        "key": "f1",
        "required": true,
-       "placeholder": "p",
        "tooltip": "t",
        "description": "d",
        "hidden": true,
@@ -333,7 +770,7 @@
      }
     },
     "root": [
-     "07e84405-d074-5102-9dc2-55f6f1a13f2d"
+     "e0b5dcd6-2df7-58b7-bf27-5d6a05a5e2b0"
     ]
    }
   },
@@ -398,6 +835,216 @@
    }
   },
   {
+   "name": "loaded:url",
+   "schema": {
+    "entities": {
+     "a3518312-d753-5572-804d-c7a2481c2e76": {
+      "type": "url",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "placeholder": "p",
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "a3518312-d753-5572-804d-c7a2481c2e76"
+    ]
+   }
+  },
+  {
+   "name": "loaded:password",
+   "schema": {
+    "entities": {
+     "7c5a32ea-885a-5697-9f95-ae84c339a765": {
+      "type": "password",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "placeholder": "p",
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "7c5a32ea-885a-5697-9f95-ae84c339a765"
+    ]
+   }
+  },
+  {
+   "name": "loaded:addressBlock",
+   "schema": {
+    "entities": {
+     "3ca5b0c4-229a-537e-9b5a-1e52505c97a5": {
+      "type": "addressBlock",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "dataSource": {
+        "minion": "geocode"
+       },
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "3ca5b0c4-229a-537e-9b5a-1e52505c97a5"
+    ]
+   }
+  },
+  {
+   "name": "loaded:number",
+   "schema": {
+    "entities": {
+     "07e84405-d074-5102-9dc2-55f6f1a13f2d": {
+      "type": "number",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "placeholder": "p",
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "07e84405-d074-5102-9dc2-55f6f1a13f2d"
+    ]
+   }
+  },
+  {
+   "name": "loaded:currency",
+   "schema": {
+    "entities": {
+     "9e493ee8-0df6-5117-ad2a-b2858104fac6": {
+      "type": "currency",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "placeholder": "p",
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "9e493ee8-0df6-5117-ad2a-b2858104fac6"
+    ]
+   }
+  },
+  {
+   "name": "loaded:stepper",
+   "schema": {
+    "entities": {
+     "ccad8188-b12c-5ca0-8e51-bf1cf3ba50cc": {
+      "type": "stepper",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "ccad8188-b12c-5ca0-8e51-bf1cf3ba50cc"
+    ]
+   }
+  },
+  {
+   "name": "loaded:rating",
+   "schema": {
+    "entities": {
+     "12da4c52-93ec-592b-84e9-09a337d8508a": {
+      "type": "rating",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "12da4c52-93ec-592b-84e9-09a337d8508a"
+    ]
+   }
+  },
+  {
    "name": "loaded:checkbox",
    "schema": {
     "entities": {
@@ -457,6 +1104,40 @@
     },
     "root": [
      "31b17ba4-bdce-5a6f-9816-1977dfca066a"
+    ]
+   }
+  },
+  {
+   "name": "loaded:searchSelect",
+   "schema": {
+    "entities": {
+     "2dd28d15-60be-50ce-a9b9-c5831a2d5111": {
+      "type": "searchSelect",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "placeholder": "p",
+       "tooltip": "t",
+       "description": "d",
+       "options": [
+        "a",
+        "b"
+       ],
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "2dd28d15-60be-50ce-a9b9-c5831a2d5111"
     ]
    }
   },
@@ -527,6 +1208,102 @@
    }
   },
   {
+   "name": "loaded:tags",
+   "schema": {
+    "entities": {
+     "d94d8a2c-3345-5117-8a45-72eb03e754db": {
+      "type": "tags",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "placeholder": "p",
+       "tooltip": "t",
+       "description": "d",
+       "options": [
+        "a",
+        "b"
+       ],
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "d94d8a2c-3345-5117-8a45-72eb03e754db"
+    ]
+   }
+  },
+  {
+   "name": "loaded:ranking",
+   "schema": {
+    "entities": {
+     "a2554951-2ca1-5ec3-9d7f-45cb932e2372": {
+      "type": "ranking",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "options": [
+        "a",
+        "b"
+       ],
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "a2554951-2ca1-5ec3-9d7f-45cb932e2372"
+    ]
+   }
+  },
+  {
+   "name": "loaded:matrix",
+   "schema": {
+    "entities": {
+     "6f871209-d752-5f1f-a540-d2c7be028131": {
+      "type": "matrix",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "6f871209-d752-5f1f-a540-d2c7be028131"
+    ]
+   }
+  },
+  {
    "name": "loaded:datetime",
    "schema": {
     "entities": {
@@ -556,16 +1333,15 @@
    }
   },
   {
-   "name": "loaded:currency",
+   "name": "loaded:day",
    "schema": {
     "entities": {
-     "9e493ee8-0df6-5117-ad2a-b2858104fac6": {
-      "type": "currency",
+     "5b7b8a29-a8bd-5377-b22f-b8abed97172f": {
+      "type": "day",
       "attributes": {
        "label": "F",
        "key": "f1",
        "required": true,
-       "placeholder": "p",
        "tooltip": "t",
        "description": "d",
        "hidden": true,
@@ -581,25 +1357,22 @@
      }
     },
     "root": [
-     "9e493ee8-0df6-5117-ad2a-b2858104fac6"
+     "5b7b8a29-a8bd-5377-b22f-b8abed97172f"
     ]
    }
   },
   {
-   "name": "loaded:addressBlock",
+   "name": "loaded:time",
    "schema": {
     "entities": {
-     "3ca5b0c4-229a-537e-9b5a-1e52505c97a5": {
-      "type": "addressBlock",
+     "4adf70b5-3b14-5a48-aaa3-e0b9426ab086": {
+      "type": "time",
       "attributes": {
        "label": "F",
        "key": "f1",
        "required": true,
        "tooltip": "t",
        "description": "d",
-       "dataSource": {
-        "minion": "geocode"
-       },
        "hidden": true,
        "disabled": true,
        "logic": [
@@ -613,7 +1386,348 @@
      }
     },
     "root": [
-     "3ca5b0c4-229a-537e-9b5a-1e52505c97a5"
+     "4adf70b5-3b14-5a48-aaa3-e0b9426ab086"
+    ]
+   }
+  },
+  {
+   "name": "loaded:file",
+   "schema": {
+    "entities": {
+     "5456a97f-9399-516b-af73-b2860a8888a5": {
+      "type": "file",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "5456a97f-9399-516b-af73-b2860a8888a5"
+    ]
+   }
+  },
+  {
+   "name": "loaded:signature",
+   "schema": {
+    "entities": {
+     "4b16b08e-e482-5808-925e-301583a33872": {
+      "type": "signature",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "required": true,
+       "tooltip": "t",
+       "description": "d",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ],
+       "calculateValue": "1 + 1"
+      }
+     }
+    },
+    "root": [
+     "4b16b08e-e482-5808-925e-301583a33872"
+    ]
+   }
+  },
+  {
+   "name": "loaded:panel",
+   "schema": {
+    "entities": {
+     "c09553d9-cda7-5237-9b6c-7f36870c488b": {
+      "type": "panel",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "c09553d9-cda7-5237-9b6c-7f36870c488b"
+    ]
+   }
+  },
+  {
+   "name": "loaded:fieldset",
+   "schema": {
+    "entities": {
+     "a28e24d0-5927-57a2-982e-d56113e8b860": {
+      "type": "fieldset",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "a28e24d0-5927-57a2-982e-d56113e8b860"
+    ]
+   }
+  },
+  {
+   "name": "loaded:well",
+   "schema": {
+    "entities": {
+     "89cba372-0978-5fbe-93d4-f6afeed41c79": {
+      "type": "well",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "89cba372-0978-5fbe-93d4-f6afeed41c79"
+    ]
+   }
+  },
+  {
+   "name": "loaded:columns",
+   "schema": {
+    "entities": {
+     "9f40d8e4-e231-5919-a4fe-2bb84fcefc76": {
+      "type": "columns",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "9f40d8e4-e231-5919-a4fe-2bb84fcefc76"
+    ]
+   }
+  },
+  {
+   "name": "loaded:tabs",
+   "schema": {
+    "entities": {
+     "37867e0a-ec8a-5364-a6bc-688c53c1f59b": {
+      "type": "tabs",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "37867e0a-ec8a-5364-a6bc-688c53c1f59b"
+    ]
+   }
+  },
+  {
+   "name": "loaded:table",
+   "schema": {
+    "entities": {
+     "baf79b69-a5dd-5d6e-a384-bbe1c505bd8c": {
+      "type": "table",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "baf79b69-a5dd-5d6e-a384-bbe1c505bd8c"
+    ]
+   }
+  },
+  {
+   "name": "loaded:wizard",
+   "schema": {
+    "entities": {
+     "a5d32af3-b81c-5aac-b13f-ecd7f48ba9eb": {
+      "type": "wizard",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "a5d32af3-b81c-5aac-b13f-ecd7f48ba9eb"
+    ]
+   }
+  },
+  {
+   "name": "loaded:page",
+   "schema": {
+    "entities": {
+     "ad621bcc-19a4-5eac-a45d-51feffef9937": {
+      "type": "page",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      },
+      "children": []
+     }
+    },
+    "root": [
+     "ad621bcc-19a4-5eac-a45d-51feffef9937"
+    ]
+   }
+  },
+  {
+   "name": "loaded:heading",
+   "schema": {
+    "entities": {
+     "1ff1d9f1-3f6e-5def-903b-f437bb17c2bd": {
+      "type": "heading",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      }
+     }
+    },
+    "root": [
+     "1ff1d9f1-3f6e-5def-903b-f437bb17c2bd"
+    ]
+   }
+  },
+  {
+   "name": "loaded:content",
+   "schema": {
+    "entities": {
+     "94cc49bd-8ee4-5df3-bc0a-3703f111b25e": {
+      "type": "content",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      }
+     }
+    },
+    "root": [
+     "94cc49bd-8ee4-5df3-bc0a-3703f111b25e"
+    ]
+   }
+  },
+  {
+   "name": "loaded:divider",
+   "schema": {
+    "entities": {
+     "7bdd3d54-6158-5551-a581-8cc9bd8e6780": {
+      "type": "divider",
+      "attributes": {
+       "label": "F",
+       "key": "f1",
+       "hidden": true,
+       "disabled": true,
+       "logic": [
+        {
+         "when": "other == \"x\"",
+         "action": "hide"
+        }
+       ]
+      }
+     }
+    },
+    "root": [
+     "7bdd3d54-6158-5551-a581-8cc9bd8e6780"
     ]
    }
   },
@@ -1251,10 +2365,10 @@
       }
      },
      "46bf5551-23e1-50e4-a05c-fb57cdc76130": {
-      "type": "number",
+      "type": "richText",
       "attributes": {
-       "label": "number",
-       "key": "f_number",
+       "label": "richText",
+       "key": "f_richText",
        "required": false
       }
      },
@@ -1275,6 +2389,65 @@
       }
      },
      "1c5a5df6-0391-5f5b-96fb-8968c1eafd9e": {
+      "type": "url",
+      "attributes": {
+       "label": "url",
+       "key": "f_url",
+       "required": false
+      }
+     },
+     "20e60090-b6f4-5555-a243-7c391dfa75e5": {
+      "type": "password",
+      "attributes": {
+       "label": "password",
+       "key": "f_password",
+       "required": false
+      }
+     },
+     "0fc98533-3c5a-550e-bc39-263f91861d37": {
+      "type": "addressBlock",
+      "attributes": {
+       "label": "addressBlock",
+       "key": "f_addressBlock",
+       "required": false,
+       "dataSource": {
+        "minion": "geocode"
+       }
+      }
+     },
+     "0dbe97f1-b4d3-5288-94c7-f3342eff91d1": {
+      "type": "number",
+      "attributes": {
+       "label": "number",
+       "key": "f_number",
+       "required": false
+      }
+     },
+     "45367343-7d9b-5177-afe3-cd224ee47e8e": {
+      "type": "currency",
+      "attributes": {
+       "label": "currency",
+       "key": "f_currency",
+       "required": false
+      }
+     },
+     "ac14d6cf-2626-590d-867d-4a52125c8d48": {
+      "type": "stepper",
+      "attributes": {
+       "label": "stepper",
+       "key": "f_stepper",
+       "required": false
+      }
+     },
+     "7a1a3923-1df9-5ecf-b30a-8f9fd9cca643": {
+      "type": "rating",
+      "attributes": {
+       "label": "rating",
+       "key": "f_rating",
+       "required": false
+      }
+     },
+     "a2b3ae45-abac-51bc-b91f-b0bb99048446": {
       "type": "checkbox",
       "attributes": {
        "label": "checkbox",
@@ -1282,7 +2455,7 @@
        "required": false
       }
      },
-     "20e60090-b6f4-5555-a243-7c391dfa75e5": {
+     "51add0cc-9341-556b-9afd-b9b3c0587e57": {
       "type": "select",
       "attributes": {
        "label": "select",
@@ -1294,7 +2467,19 @@
        ]
       }
      },
-     "0fc98533-3c5a-550e-bc39-263f91861d37": {
+     "ee7e48f4-935e-5bae-94bc-5d890b1733b0": {
+      "type": "searchSelect",
+      "attributes": {
+       "label": "searchSelect",
+       "key": "f_searchSelect",
+       "required": false,
+       "options": [
+        "x",
+        "y"
+       ]
+      }
+     },
+     "71aac995-f6d5-57a2-986b-aff416899a94": {
       "type": "radio",
       "attributes": {
        "label": "radio",
@@ -1306,7 +2491,7 @@
        ]
       }
      },
-     "0dbe97f1-b4d3-5288-94c7-f3342eff91d1": {
+     "3dbd8e1e-52e7-574c-a4bd-275e1f442d6a": {
       "type": "selectBoxes",
       "attributes": {
        "label": "selectBoxes",
@@ -1318,7 +2503,39 @@
        ]
       }
      },
-     "45367343-7d9b-5177-afe3-cd224ee47e8e": {
+     "bbf37f44-5548-5613-8ece-aa4832ca7abc": {
+      "type": "tags",
+      "attributes": {
+       "label": "tags",
+       "key": "f_tags",
+       "required": false,
+       "options": [
+        "x",
+        "y"
+       ]
+      }
+     },
+     "5f6d9ca6-9f5b-5276-8d42-bd04f287cc04": {
+      "type": "ranking",
+      "attributes": {
+       "label": "ranking",
+       "key": "f_ranking",
+       "required": false,
+       "options": [
+        "x",
+        "y"
+       ]
+      }
+     },
+     "72d5e577-a9de-5c63-b861-dbce899940cc": {
+      "type": "matrix",
+      "attributes": {
+       "label": "matrix",
+       "key": "f_matrix",
+       "required": false
+      }
+     },
+     "066b0f5c-53e1-511e-a0bd-10fd5bf2fb1a": {
       "type": "datetime",
       "attributes": {
        "label": "datetime",
@@ -1326,26 +2543,124 @@
        "required": false
       }
      },
-     "ac14d6cf-2626-590d-867d-4a52125c8d48": {
-      "type": "currency",
+     "ab10cb6d-62e3-5964-a854-b3aa044aeef3": {
+      "type": "day",
       "attributes": {
-       "label": "currency",
-       "key": "f_currency",
+       "label": "day",
+       "key": "f_day",
        "required": false
       }
      },
-     "7a1a3923-1df9-5ecf-b30a-8f9fd9cca643": {
-      "type": "addressBlock",
+     "ec9ef8a4-3b43-5922-8912-2b6ea5755aa9": {
+      "type": "time",
       "attributes": {
-       "label": "addressBlock",
-       "key": "f_addressBlock",
-       "required": false,
-       "dataSource": {
-        "minion": "geocode"
-       }
+       "label": "time",
+       "key": "f_time",
+       "required": false
       }
      },
-     "a2b3ae45-abac-51bc-b91f-b0bb99048446": {
+     "e6cb3bcd-1b68-57bb-97f3-0d85b3cd4d0e": {
+      "type": "file",
+      "attributes": {
+       "label": "file",
+       "key": "f_file",
+       "required": false
+      }
+     },
+     "82d29de4-6a02-57f4-b435-e1543e90f3c1": {
+      "type": "signature",
+      "attributes": {
+       "label": "signature",
+       "key": "f_signature",
+       "required": false
+      }
+     },
+     "bc0e65cb-8800-52e7-8372-2fb700538f81": {
+      "type": "panel",
+      "attributes": {
+       "label": "panel",
+       "key": "f_panel"
+      },
+      "children": []
+     },
+     "071ce56b-c18f-51b3-be33-324e7df03545": {
+      "type": "fieldset",
+      "attributes": {
+       "label": "fieldset",
+       "key": "f_fieldset"
+      },
+      "children": []
+     },
+     "8f07b6cb-b9fa-5287-a783-a5cd4d5299b2": {
+      "type": "well",
+      "attributes": {
+       "label": "well",
+       "key": "f_well"
+      },
+      "children": []
+     },
+     "85f61901-b7c8-5dbd-b0b9-16c170f07092": {
+      "type": "columns",
+      "attributes": {
+       "label": "columns",
+       "key": "f_columns"
+      },
+      "children": []
+     },
+     "f30a888e-73bb-5f45-89e4-9f695bf3c7d8": {
+      "type": "tabs",
+      "attributes": {
+       "label": "tabs",
+       "key": "f_tabs"
+      },
+      "children": []
+     },
+     "d80fc4b0-a187-57f0-a02a-8c8192bbbb3b": {
+      "type": "table",
+      "attributes": {
+       "label": "table",
+       "key": "f_table"
+      },
+      "children": []
+     },
+     "06dcaed1-e44d-577d-b440-80e4e8d987fa": {
+      "type": "wizard",
+      "attributes": {
+       "label": "wizard",
+       "key": "f_wizard"
+      },
+      "children": []
+     },
+     "2854c57d-5fa5-519d-9e5f-866e8fd1666d": {
+      "type": "page",
+      "attributes": {
+       "label": "page",
+       "key": "f_page"
+      },
+      "children": []
+     },
+     "b87f0c20-b305-5d51-9933-8dcece71f3b5": {
+      "type": "heading",
+      "attributes": {
+       "label": "heading",
+       "key": "f_heading"
+      }
+     },
+     "553b2e02-2b48-5742-9942-367da1ec05d1": {
+      "type": "content",
+      "attributes": {
+       "label": "content",
+       "key": "f_content"
+      }
+     },
+     "dd56bb92-0276-5f3d-ab9c-8552ae527e4b": {
+      "type": "divider",
+      "attributes": {
+       "label": "divider",
+       "key": "f_divider"
+      }
+     },
+     "830168d3-982b-5ba7-bd7b-6301b17f9281": {
       "type": "button",
       "attributes": {
        "label": "button",
@@ -1366,7 +2681,31 @@
      "45367343-7d9b-5177-afe3-cd224ee47e8e",
      "ac14d6cf-2626-590d-867d-4a52125c8d48",
      "7a1a3923-1df9-5ecf-b30a-8f9fd9cca643",
-     "a2b3ae45-abac-51bc-b91f-b0bb99048446"
+     "a2b3ae45-abac-51bc-b91f-b0bb99048446",
+     "51add0cc-9341-556b-9afd-b9b3c0587e57",
+     "ee7e48f4-935e-5bae-94bc-5d890b1733b0",
+     "71aac995-f6d5-57a2-986b-aff416899a94",
+     "3dbd8e1e-52e7-574c-a4bd-275e1f442d6a",
+     "bbf37f44-5548-5613-8ece-aa4832ca7abc",
+     "5f6d9ca6-9f5b-5276-8d42-bd04f287cc04",
+     "72d5e577-a9de-5c63-b861-dbce899940cc",
+     "066b0f5c-53e1-511e-a0bd-10fd5bf2fb1a",
+     "ab10cb6d-62e3-5964-a854-b3aa044aeef3",
+     "ec9ef8a4-3b43-5922-8912-2b6ea5755aa9",
+     "e6cb3bcd-1b68-57bb-97f3-0d85b3cd4d0e",
+     "82d29de4-6a02-57f4-b435-e1543e90f3c1",
+     "bc0e65cb-8800-52e7-8372-2fb700538f81",
+     "071ce56b-c18f-51b3-be33-324e7df03545",
+     "8f07b6cb-b9fa-5287-a783-a5cd4d5299b2",
+     "85f61901-b7c8-5dbd-b0b9-16c170f07092",
+     "f30a888e-73bb-5f45-89e4-9f695bf3c7d8",
+     "d80fc4b0-a187-57f0-a02a-8c8192bbbb3b",
+     "06dcaed1-e44d-577d-b440-80e4e8d987fa",
+     "2854c57d-5fa5-519d-9e5f-866e8fd1666d",
+     "b87f0c20-b305-5d51-9933-8dcece71f3b5",
+     "553b2e02-2b48-5742-9942-367da1ec05d1",
+     "dd56bb92-0276-5f3d-ab9c-8552ae527e4b",
+     "830168d3-982b-5ba7-bd7b-6301b17f9281"
     ]
    }
   },
@@ -1439,28 +2778,10 @@
        "key": "new",
        "required": false
       }
-     },
-     "a125c20f-608b-5773-a44f-9c0607424452": {
-      "type": "panel",
-      "attributes": {
-       "label": "Panel",
-       "key": "panel"
-      },
-      "children": [
-       "f8219fbd-1cb6-5f0a-992b-7c89d634ce14"
-      ]
-     },
-     "f8219fbd-1cb6-5f0a-992b-7c89d634ce14": {
-      "type": "textField",
-      "attributes": {
-       "label": "Inner",
-       "key": "inner"
-      }
      }
     },
     "root": [
-     "1efab534-b497-526b-adb7-ef61290b095d",
-     "a125c20f-608b-5773-a44f-9c0607424452"
+     "1efab534-b497-526b-adb7-ef61290b095d"
     ]
    }
   },
@@ -1472,31 +2793,13 @@
       "type": "textField",
       "attributes": {
        "label": "Clash",
-       "key": "inner_2",
+       "key": "inner",
        "required": false
-      }
-     },
-     "7e6a0a68-7c59-5746-bc3e-c7fd452d3224": {
-      "type": "panel",
-      "attributes": {
-       "label": "Panel",
-       "key": "panel"
-      },
-      "children": [
-       "e185e092-14ef-5200-93c6-4f0e6747befb"
-      ]
-     },
-     "e185e092-14ef-5200-93c6-4f0e6747befb": {
-      "type": "textField",
-      "attributes": {
-       "label": "Inner",
-       "key": "inner"
       }
      }
     },
     "root": [
-     "1773edef-0808-57ba-b6b3-186efbce34f0",
-     "7e6a0a68-7c59-5746-bc3e-c7fd452d3224"
+     "1773edef-0808-57ba-b6b3-186efbce34f0"
     ]
    }
   },
@@ -1508,59 +2811,21 @@
       "type": "textField",
       "attributes": {
        "label": "Clash",
-       "key": "inner_2",
+       "key": "inner",
        "required": false
-      }
-     },
-     "3eb4c7ce-350a-5e2e-976b-ea3147e37c88": {
-      "type": "panel",
-      "attributes": {
-       "label": "Panel",
-       "key": "panel"
-      },
-      "children": [
-       "ec04c523-b762-5341-8ced-a98c15b52b9b"
-      ]
-     },
-     "ec04c523-b762-5341-8ced-a98c15b52b9b": {
-      "type": "textField",
-      "attributes": {
-       "label": "Inner",
-       "key": "inner"
       }
      }
     },
     "root": [
-     "f45ce18d-ca70-5e2a-9575-20ed36519080",
-     "3eb4c7ce-350a-5e2e-976b-ea3147e37c88"
+     "f45ce18d-ca70-5e2a-9575-20ed36519080"
     ]
    }
   },
   {
    "name": "preserved:empty-form",
    "schema": {
-    "entities": {
-     "b36915dd-9c94-563c-a9be-614be815e466": {
-      "type": "panel",
-      "attributes": {
-       "label": "Panel",
-       "key": "panel"
-      },
-      "children": [
-       "74351b55-f7cc-5006-8ad8-e6ee2ab8f0a1"
-      ]
-     },
-     "74351b55-f7cc-5006-8ad8-e6ee2ab8f0a1": {
-      "type": "textField",
-      "attributes": {
-       "label": "Inner",
-       "key": "inner"
-      }
-     }
-    },
-    "root": [
-     "b36915dd-9c94-563c-a9be-614be815e466"
-    ]
+    "entities": {},
+    "root": []
    }
   },
   {

@@ -1,0 +1,295 @@
+{
+ "_comment": "form-core's field-type registry, exported by scripts/export-field-types.mjs. Consumed by luke-agents (tests/test_field_type_parity.py) so the form agent cannot silently fall behind what the builder offers. Regenerate with `npm run fixtures:field-types` and copy to luke-agents/tests/fixtures/field-types.json.",
+ "revision": "2026-09-25.1",
+ "count": 48,
+ "types": [
+  {
+   "name": "address",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "addressBlock",
+   "valueType": "object",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "array",
+   "valueType": "array",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "button",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "checkbox",
+   "valueType": "boolean",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "columns",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "container",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "content",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "currency",
+   "valueType": "number",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "dataGrid",
+   "valueType": "array",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "datetime",
+   "valueType": "date",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "day",
+   "valueType": "date",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "divider",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "editGrid",
+   "valueType": "array",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "email",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "fieldset",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "file",
+   "valueType": "file",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "heading",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "hr",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "html",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "htmlElement",
+   "valueType": "none",
+   "isContainer": false,
+   "isStatic": true
+  },
+  {
+   "name": "map",
+   "valueType": "object",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "matrix",
+   "valueType": "object",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "number",
+   "valueType": "number",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "page",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "panel",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "password",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "payment",
+   "valueType": "object",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "phoneNumber",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "radio",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "ranking",
+   "valueType": "array",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "rating",
+   "valueType": "number",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "richText",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "searchSelect",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "select",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "selectBoxes",
+   "valueType": "array",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "signature",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "stepper",
+   "valueType": "number",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "table",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "tabs",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "tags",
+   "valueType": "array",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "tagsField",
+   "valueType": "array",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "textarea",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "textField",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "time",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "url",
+   "valueType": "string",
+   "isContainer": false,
+   "isStatic": false
+  },
+  {
+   "name": "well",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  },
+  {
+   "name": "wizard",
+   "valueType": "none",
+   "isContainer": true,
+   "isStatic": false
+  }
+ ]
+}

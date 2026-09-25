@@ -23,7 +23,8 @@ from ...core.transcripts import (
 )
 from .coltorapps import schema_to_spec, spec_to_schema
 from .ops import UnsupportedOperation, apply_operations
-from .prompt import OUTBOUND_GUIDANCE, SYSTEM, TESTDATA_SYSTEM, build_testdata_message, build_user_message
+from .prompt import (OUTBOUND_GUIDANCE, SYSTEM, TESTDATA_SYSTEM, build_research_message,
+                     build_testdata_message, build_user_message)
 from .schema import (
     AssistantTurn,
     ChatRequest,
@@ -124,10 +125,50 @@ class FormAgent(Agent):
                 # acts on was dropped with it.
                 raise brain_http_error(exc, busy_message=_BUSY) from exc
 
+            # RESEARCH: the model said it needs a fact it does not have, so fetch it and ask
+            # again. Bounded to ONE extra round by construction — the second pass is told not to
+            # ask, and we never look at `research` on its answer — because a model that can
+            # re-ask indefinitely is a loop billed to the workspace.
+            sources: list[dict] = []
+            research_failed = False
+            if turn.research and not turn.action:
+                found = llm.research(turn.research)
+                if found is not None:
+                    sources = found.sources
+                    followup = build_research_message(turn.research, found.text)
+                    messages.append({"role": "user", "content": followup})
+                    try:
+                        turn = llm.generate(system, f"{user_msg}\n\n{followup}", AssistantTurn,
+                                            temperature=0.4)
+                    except Exception as exc:  # noqa: BLE001
+                        _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
+                        raise brain_http_error(exc, busy_message=_BUSY) from exc
+                elif llm.research_supported():
+                    # Searched and found nothing usable. Say so rather than building a form out
+                    # of the model's imagination — the whole point of asking was not knowing.
+                    research_failed = True
+                    turn.reply = (
+                        f"I couldn't find anything usable for \u201c{turn.research}\u201d, so I "
+                        "haven't guessed at it. Paste in what you have and I'll build from that."
+                    )
+                else:
+                    research_failed = True
+                    turn.reply = (
+                        "I'd need to look that up on the web, and this provider can't search. "
+                        "Switch to Anthropic, OpenAI or Gemini in the model picker, or paste the "
+                        "details in and I'll build from those."
+                    )
+
             # A LIFECYCLE action (check in / publish / undo) is NOT a field edit — ignore any
             # operations the model may have included and leave the form untouched; the app runs
             # the action (and enforces whether it's currently allowed).
-            ops = [] if turn.action else turn.operations
+            #
+            # `research_failed` is the same invariant for the same reason, and it was the sibling
+            # this line forgot. A model that asks to look something up may ALSO emit a guess in
+            # the same turn; when the lookup then finds nothing, the reply says "I haven't
+            # guessed at it" while the guess is applied underneath it. Answering a question the
+            # model admitted it could not answer, and contradicting the sentence on screen.
+            ops = [] if (turn.action or research_failed) else turn.operations
             # Defense in depth (#26): reject ops referencing unknown op kinds / field types
             # before applying them, even though they already passed Pydantic.
             try:
@@ -152,6 +193,7 @@ class FormAgent(Agent):
                 action=turn.action,
                 brain=llm.active_brain(),
                 turn_id=turn_id,
+                sources=sources,
             )
 
         @router.post("/testdata", response_model=TestDataResponse)
