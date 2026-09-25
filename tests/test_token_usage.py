@@ -62,3 +62,29 @@ def test_groq_backend_captures_real_response_usage(monkeypatch):
     assert out.reply == "hi"
     assert llm.last_usage() == llm.Usage(prompt_tokens=12, completion_tokens=8)
     assert M.TOKENS.labels("groq", "test-model", "prompt")._value.get() == before + 12
+
+
+def test_a_multi_call_turn_reports_its_whole_cost_once(monkeypatch):
+    """A research turn is three provider calls; the transcript is the durable record of what it
+    cost, and the daily budget is what stops a workspace overspending. Those need DIFFERENT
+    numbers from the same event: the total for the record, this call's delta for the meters.
+
+    Overwriting `last_usage()` under-reported the turn to the transcript (only the last call).
+    Feeding the running total to the meters instead double-charged the budget — a 42 + 48 turn
+    billed 132. Both are wrong in opposite directions, so both are pinned here.
+    """
+    charged: list[int] = []
+    monkeypatch.setattr("luke_agents.core.tokenbudget.record_current", lambda n: charged.append(n))
+
+    llm.reset_usage()
+    llm._note_usage("groq", "m", 30, 12)   # 42
+    llm._note_usage("groq", "m", 40, 8)    # 48
+    llm._note_usage("groq", "m", 5, 5)     # 10
+
+    assert llm.last_usage().total_tokens == 100, "the transcript must see the WHOLE turn"
+    assert charged == [42, 48, 10], "each meter charge is this call's delta, never the total"
+    assert sum(charged) == 100
+
+    # And a new request starts from zero, because threadpool workers are reused.
+    llm.reset_usage()
+    assert llm.last_usage() is None

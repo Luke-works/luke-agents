@@ -79,6 +79,9 @@ class FormAgent(Agent):
             enforce(_rate_key(request, tenant))
             # Per-tenant DAILY token cap (D5): reject if this org already hit today's ceiling.
             tokenbudget.enforce(tenant, resolve_tier(request))
+            # Threadpool workers are REUSED, and usage is cumulative across a turn's provider
+            # calls now, so a turn must not inherit the previous turn's total on the same thread.
+            llm.reset_usage()
 
             # Project the incoming coltorapps schema to a flat spec, keeping the
             # bits we must not lose so the rebuild can merge instead of clobber.

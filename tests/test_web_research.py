@@ -162,6 +162,34 @@ def test_the_search_cap_is_sent_wherever_the_provider_has_one(monkeypatch, platf
     )
 
 
+def test_research_shares_the_build_turn_s_client_and_sets_its_deadline_per_request(monkeypatch, platform_key):
+    """One SDK client per credential, not two.
+
+    `_cached_client` is a 64-entry LRU holding one httpx client — sockets, TLS context, connection
+    pool — per workspace key this worker has served. Giving research its own cache key put TWO
+    entries per researching workspace in it, halving how many tenants a worker can hold before it
+    evicts and rebuilds TLS + DNS on every turn. The only difference was the timeout, and all
+    three SDKs take that per call.
+    """
+    keys: list[str] = []
+    monkeypatch.setattr(llm, "active_brain", lambda: "anthropic")
+    fake = FakeAnthropic()
+
+    def spy(key, build):
+        keys.append(key)
+        return fake
+
+    monkeypatch.setattr(llm, "_cached_client", spy)
+    llm.research("Savera Indian Kitchen menu")
+
+    assert keys and not any("research" in k for k in keys), (
+        f"research must reuse the build turn's cache key, got {keys}"
+    )
+    assert keys[0] == llm._client_key("anthropic", "sk-test")
+    # The longer deadline still applies — it just travels with the request now.
+    assert fake.calls[0]["timeout"] == llm.RESEARCH_TIMEOUT_SECONDS
+
+
 def test_a_search_that_finds_nothing_returns_nothing(monkeypatch, platform_key):
     # An empty Research would put an empty "here is what I found" block in the build prompt, which
     # reads as "the web says nothing about this" rather than "the search did not happen" — and the

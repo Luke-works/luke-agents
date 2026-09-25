@@ -61,3 +61,28 @@ def test_json_formatter_tags_correlation_id():
     assert obj["correlation_id"] == "trace-99"
     assert obj["message"] == "hello world"
     assert obj["level"] == "INFO"
+
+
+def test_the_sync_handler_ceiling_is_raised_at_boot():
+    """Every agent endpoint is a plain `def`, so anyio's threadpool limit IS this service's
+    concurrency ceiling. Its default of 40 was chosen when a turn was one provider call; a
+    research turn is three and holds its slot ~3x as long, taking the same 40 slots from ~1.3
+    to ~0.47 turns/second. Raising it is nearly free because these handlers sit blocked on a
+    provider socket rather than burning CPU.
+
+    The limiter belongs to the running event loop, so this has to be asked from inside one —
+    which is also why the app sets it in `lifespan`, on the loop that will serve requests.
+    """
+    import anyio
+    import anyio.to_thread
+
+    from luke_agents.core.server import size_sync_handler_pool
+
+    async def measure() -> int:
+        before = anyio.to_thread.current_default_thread_limiter().total_tokens
+        size_sync_handler_pool()
+        return anyio.to_thread.current_default_thread_limiter().total_tokens, before
+
+    after, before = anyio.run(measure)
+    assert before == 40, "anyio's default moved; the reasoning above needs revisiting"
+    assert after >= 160

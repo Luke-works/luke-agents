@@ -69,6 +69,7 @@ class EmailAgent(Agent):
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
             enforce(_rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
+            llm.reset_usage()  # cumulative usage: never inherit a reused thread's last turn
 
             # The response_model IS the EmailDoc: json_object mode guarantees a
             # valid document, and we repair/clamp it before returning so the UI

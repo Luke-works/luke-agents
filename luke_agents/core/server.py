@@ -29,7 +29,7 @@ from .metrics import MetricsMiddleware
 from .metrics import render as render_metrics
 from .observability import CorrelationIdMiddleware, configure_logging
 from .registry import Agent
-from .transcripts import _float_env, flush_pending, get_store
+from .transcripts import _float_env, _int_env, flush_pending, get_store
 from .transcripts import metrics as transcript_metrics
 
 log = logging.getLogger("luke_agents.server")
@@ -139,6 +139,33 @@ def _install_curated_openapi(app: FastAPI, title: str, api_version: str) -> None
     app.openapi = custom
 
 
+def size_sync_handler_pool() -> int:
+    """Raise the cap on concurrent SYNC endpoint handlers.
+
+    Every agent endpoint is a plain `def`, so FastAPI runs it in anyio's threadpool — whose
+    default is 40. That number IS this service's concurrency ceiling, and it was chosen for
+    turns that took one provider call. A LukeBuilds research turn is three (build, search,
+    rebuild), so it holds its slot roughly three times as long: the same 40 slots went from
+    ~1.3 turns/second to ~0.47.
+
+    Raising it is nearly free precisely BECAUSE these handlers are not CPU-bound — they sit
+    blocked on a provider socket, releasing the GIL, costing a thread stack and nothing else.
+    (An async rewrite would buy the same thing for far more risk; real headroom past this is
+    more instances, not more threads in one.) Sized from the env so a bigger box can say so
+    without a deploy of this file.
+    """
+    want = _int_env("AGENTS_THREADPOOL", 160)
+    try:
+        import anyio.to_thread
+
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        if want > limiter.total_tokens:
+            limiter.total_tokens = want
+        log.info("sync-handler concurrency: %s", limiter.total_tokens)
+    except Exception:  # noqa: BLE001 - a capacity tweak must never stop the app booting
+        log.exception("threadpool: could not raise the sync-handler limit")
+
+
 def build_app(agents: list[Agent], *, default_slug: str | None = None, title: str = "luke-agents") -> FastAPI:
     assert_prod_hardened()  # fail-fast before wiring anything if prod posture is unsafe
     if not agents:
@@ -155,6 +182,7 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         # #36: modern lifespan (replaces the deprecated @app.on_event start/shutdown hooks).
         # Startup: create the schema/table (or JSONL dir) up front so the first chat doesn't
         # pay for it and a bad DSN surfaces at boot, not mid-request. Never blocks on failure.
+        size_sync_handler_pool()
         store = get_store()
         try:
             store.init()
