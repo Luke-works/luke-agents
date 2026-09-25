@@ -233,6 +233,15 @@ class TranscriptStore:
     def list_audit(self, *, action: Optional[str] = None, limit: int = 100) -> list:  # queryable (#40)
         return []
 
+    def model_stats(self, agent: str, *, days: int) -> list:  # per-model evidence for ranking
+        """How each model has performed at this agent's job lately.
+
+        Empty is the honest answer for a store that cannot aggregate — the caller falls back to
+        the curated seed, which is a stated guess, rather than to fabricated zeros that would
+        read as "every model is bad".
+        """
+        return []
+
     def ping(self) -> bool:  # readiness check (#35) — is the store reachable?
         return True
 
@@ -517,6 +526,58 @@ class PostgresStore(TranscriptStore):
             return cur.rowcount
 
         return bool(self._run(run))
+
+    def model_stats(self, agent: str, *, days: int) -> list:
+        """Per-model evidence for this agent, aggregated in the database.
+
+        One grouped query rather than pulling turns back and counting here: the table is the
+        whole point of having Postgres, and a model's history is the sort of thing that grows
+        without anyone noticing.
+
+        `error IS NULL` is the reliability signal and it is genuinely pass/fail — every agent
+        asks the model for a schema-shaped answer, so a turn that did not parse was recorded
+        with an error. `accepted` is only set when someone actually said, so it is averaged over
+        the turns that have it rather than over all of them; a model used mostly without feedback
+        must not be scored as though people rejected it.
+        """
+        from .model_rank import ModelStat
+
+        if not self._ready:
+            self.init()
+        sql = f"""
+            SELECT model,
+                   count(*)                                           AS samples,
+                   avg(CASE WHEN error IS NULL THEN 1.0 ELSE 0.0 END) AS ok_rate,
+                   percentile_disc(0.5) WITHIN GROUP (ORDER BY latency_ms)
+                       FILTER (WHERE latency_ms IS NOT NULL)          AS p50,
+                   avg(CASE WHEN accepted THEN 1.0 ELSE 0.0 END)
+                       FILTER (WHERE accepted IS NOT NULL)            AS kept_rate
+              FROM {self.schema}.turns
+             WHERE agent = %s
+               AND model IS NOT NULL
+               AND created_at > now() - make_interval(days => %s)
+             GROUP BY model
+        """
+
+        def run(cur):
+            cur.execute(sql, (agent, days))
+            return cur.fetchall()
+
+        try:
+            rows = self._run(run) or []
+        except Exception:  # noqa: BLE001 - ranking is a nicety; never fail a request for it
+            log.warning("transcripts: could not aggregate model stats for %s", agent, exc_info=True)
+            return []
+        return [
+            ModelStat(
+                model=r[0],
+                samples=int(r[1]),
+                ok_rate=float(r[2]) if r[2] is not None else 0.0,
+                p50_latency_ms=int(r[3]) if r[3] is not None else None,
+                kept_rate=float(r[4]) if r[4] is not None else None,
+            )
+            for r in rows
+        ]
 
     def ping(self) -> bool:
         # Readiness (#35): a real round-trip to Postgres. Never raises — a False here means
