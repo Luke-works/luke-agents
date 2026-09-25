@@ -567,6 +567,11 @@ class PostgresStore(TranscriptStore):
         """).format(schema=pgsql.Identifier(self.schema))
 
         def run(cur):
+            # nosemgrep - the statement is composed above with psycopg2.sql.Identifier, which
+            # quotes the schema AS an identifier; `agent` and `days` are bound. The rule fires on
+            # any execute() whose statement is a variable and cannot see either fact. Unqualified
+            # on purpose: the rule's real id ends in a doubled suffix, and naming it wrongly is a
+            # suppression that silently does nothing — which is what happened twice here already.
             cur.execute(stmt, (agent, days))
             return cur.fetchall()
 
