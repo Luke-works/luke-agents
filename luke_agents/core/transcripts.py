@@ -567,10 +567,16 @@ class PostgresStore(TranscriptStore):
         """).format(schema=pgsql.Identifier(self.schema))
 
         def run(cur):
-            # The statement is composed above with psycopg2.sql.Identifier, which quotes the
-            # schema AS an identifier, and `agent` / `days` are bound. The rule fires on any
-            # execute() whose statement is a variable and can see neither fact.
-            cur.execute(stmt, (agent, days))  # nosemgrep
+            # Semgrep's sqlalchemy-execute-raw-query flags this and it is a false positive: the
+            # statement is composed above with psycopg2.sql.Identifier, which quotes the schema AS
+            # an identifier, and `agent` / `days` are bound. The rule fires on any execute() whose
+            # statement is a variable and can see neither fact.
+            #
+            # No `# nosemgrep` here on purpose. Four placements of it were tried and this scan
+            # honours none of them, so the directive would be a comment that looks like a control
+            # and silently is not. The scan is informational by design (see security-scan.yml);
+            # this belongs in the Security tab as a triaged false positive, not in the source.
+            cur.execute(stmt, (agent, days))
             return cur.fetchall()
 
         try:
