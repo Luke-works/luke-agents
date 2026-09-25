@@ -140,19 +140,22 @@ def _install_curated_openapi(app: FastAPI, title: str, api_version: str) -> None
 
 
 def size_sync_handler_pool() -> int:
-    """Raise the cap on concurrent SYNC endpoint handlers.
+    """Raise the cap on concurrent SYNC work: the endpoints that stay `def`, and the blocking
+    calls that async endpoints hand off with `run_in_threadpool`.
 
-    Every agent endpoint is a plain `def`, so FastAPI runs it in anyio's threadpool — whose
-    default is 40. That number IS this service's concurrency ceiling, and it was chosen for
-    turns that took one provider call. A LukeBuilds research turn is three (build, search,
-    rebuild), so it holds its slot roughly three times as long: the same 40 slots went from
-    ~1.3 turns/second to ~0.47.
+    anyio's default is 40. That number USED to be this service's whole concurrency ceiling,
+    because every endpoint was a plain `def` holding a slot for its entire provider call — and
+    a LukeBuilds research turn is three calls (build, search, rebuild), so it held one roughly
+    three times as long.
 
-    Raising it is nearly free precisely BECAUSE these handlers are not CPU-bound — they sit
-    blocked on a provider socket, releasing the GIL, costing a thread stack and nothing else.
-    (An async rewrite would buy the same thing for far more risk; real headroom past this is
-    more instances, not more threads in one.) Sized from the env so a bigger box can say so
-    without a deploy of this file.
+    That is no longer what this pool does. The provider calls are awaited now; what still comes
+    through here is the rate limiter, `tokenbudget.check`, `/feedback`'s Postgres writes and the
+    local Ollama brain — brief blocking work in front of, or instead of, a turn. The ceiling on
+    turns themselves is `LLM_MAX_INFLIGHT` in `core.llm`.
+
+    Still worth raising: this pool is now the landing place for every blocking call the async
+    path deliberately keeps off the loop, and a thread parked on a socket costs a stack and
+    nothing else. Sized from the env so a bigger box can say so without a deploy of this file.
     """
     want = _int_env("AGENTS_THREADPOOL", 160)
     try:
