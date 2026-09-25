@@ -81,3 +81,24 @@ def test_a_real_rate_limit_says_whose_limit_it_is(monkeypatch, tmp_path):
     body = r.text.lower()
     assert "your ai provider" in body
     assert "your own provider" in body or "rather than ours" in body
+
+
+def test_a_provider_400_is_not_reported_as_a_passing_outage(monkeypatch, tmp_path):
+    """Waiting does not fix a rejected request, so it must not be described as temporary.
+
+    A workspace on a Claude model that refuses a forced `tool_choice` saw a 400 on every turn,
+    reported as "temporarily unavailable; please retry shortly" — a retry loop against a
+    permanent condition, with nothing pointing at the model as the thing to change.
+    """
+    exc = RuntimeError('tool_choice: type "tool" and "any" are not supported for this model.')
+    exc.status_code = 400
+    r = _chat(_client(monkeypatch, tmp_path, _raise(exc)))
+
+    assert r.status_code == 422, "a rejected request is not an outage"
+    body = r.text.lower()
+    assert "temporarily unavailable" not in body
+    assert "retry shortly" not in body
+    # Names the lever the person actually has.
+    assert "model" in body
+    # And still never echoes the provider's own wording.
+    assert "tool_choice" not in body
