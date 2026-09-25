@@ -4,7 +4,7 @@ pydantic==2.13.5         # Bumped from 2.10.4 for google-genai, whose floor is >
                          # both at the old version is an unsatisfiable resolution, which is how CI
                          # failed. This is the version the suite actually runs against.
 groq==0.13.1
-openai==2.48.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set. Pinned
+openai==3.3.0           # OpenAI brain (GPT-5 nano); only used when OPENAI_API_KEY is set. Pinned
                          # (was >=1.99.0): an unpinned floor lets a future release silently break the
                          # build/behavior with no code change — supply-chain risk (D7). This freezes
                          # the version CI already resolves. Bump deliberately + re-run tests.
