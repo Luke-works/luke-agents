@@ -544,12 +544,14 @@ class PostgresStore(TranscriptStore):
 
         if not self._ready:
             self.init()
-        # The only interpolation below is `self.schema`, a SQL IDENTIFIER — identifiers cannot be
-        # bound as parameters in any driver, so a literal is the only way to name a schema. It is
-        # checked against `_IDENT` in __init__ and the constructor refuses anything else, so by
-        # the time it reaches here it is `[A-Za-z_][A-Za-z0-9_]*` and nothing else. Every
-        # caller-supplied value — `agent`, `days` — is bound, which is what the rule is for.
-        sql = f"""
+        # Composed, not interpolated. A schema is an IDENTIFIER and identifiers cannot be bound
+        # as parameters — which is why the rest of this file builds them into an f-string, and
+        # why a scanner is right to look twice. `sql.Identifier` is the API for exactly this: it
+        # quotes and escapes the name as an identifier rather than trusting it, so the query is
+        # safe by construction rather than by the `_IDENT` check in __init__ happening to hold.
+        from psycopg2 import sql as pgsql
+
+        stmt = pgsql.SQL("""
             SELECT model,
                    count(*)                                           AS samples,
                    avg(CASE WHEN error IS NULL THEN 1.0 ELSE 0.0 END) AS ok_rate,
@@ -557,16 +559,15 @@ class PostgresStore(TranscriptStore):
                        FILTER (WHERE latency_ms IS NOT NULL)          AS p50,
                    avg(CASE WHEN accepted THEN 1.0 ELSE 0.0 END)
                        FILTER (WHERE accepted IS NOT NULL)            AS kept_rate
-              FROM {self.schema}.turns
+              FROM {schema}.turns
              WHERE agent = %s
                AND model IS NOT NULL
                AND created_at > now() - make_interval(days => %s)
              GROUP BY model
-        """
+        """).format(schema=pgsql.Identifier(self.schema))
 
         def run(cur):
-            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
-            cur.execute(sql, (agent, days))  # see the note above `sql`
+            cur.execute(stmt, (agent, days))
             return cur.fetchall()
 
         try:
