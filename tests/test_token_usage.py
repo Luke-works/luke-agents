@@ -2,6 +2,8 @@
 (agents_llm_tokens_total) so token spend, the fleet's primary cost, is finally visible."""
 from pydantic import BaseModel
 
+from tests.aio import run
+
 import luke_agents.core.llm as llm
 from luke_agents.core import metrics as M
 
@@ -49,7 +51,7 @@ def test_groq_backend_captures_real_response_usage(monkeypatch):
         class chat:  # noqa: N801
             class completions:  # noqa: N801
                 @staticmethod
-                def create(**_kw):
+                async def create(**_kw):
                     return _Resp()
 
     monkeypatch.setattr(llm, "_cached_client", lambda _name, _factory: _Client())
@@ -57,7 +59,7 @@ def test_groq_backend_captures_real_response_usage(monkeypatch):
     monkeypatch.setattr(llm, "GROQ_FALLBACK_MODEL", "")  # single model, deterministic
 
     before = M.TOKENS.labels("groq", "test-model", "prompt")._value.get()
-    out = llm._groq("system mentions json", "user", _Reply, 0.3)
+    out = run(llm._groq("system mentions json", "user", _Reply, 0.3))
 
     assert out.reply == "hi"
     assert llm.last_usage() == llm.Usage(prompt_tokens=12, completion_tokens=8)

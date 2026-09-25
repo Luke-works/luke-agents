@@ -27,7 +27,7 @@ SCHEMA = {"entities": {}, "root": []}
 
 
 def _client(monkeypatch, turn: AssistantTurn, capture: dict | None = None) -> TestClient:
-    def _gen(system, user_msg, *a, **k):
+    async def _gen(system, user_msg, *a, **k):
         if capture is not None:
             capture["system"] = system
             capture["user_msg"] = user_msg

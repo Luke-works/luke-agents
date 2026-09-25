@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.aio import run
+
 import luke_agents.core.llm as llm
 
 
@@ -32,7 +34,7 @@ class FakeAnthropic:
         self.messages = self
         self._text, self._cite = text, cite
 
-    def create(self, **kw):
+    async def create(self, **kw):
         self.calls.append(kw)
         citations = [_Obj(url=self._cite, title="Menu")] if self._cite else []
         return _Obj(content=[_Obj(type="text", text=self._text, citations=citations)],
@@ -45,7 +47,7 @@ class FakeOpenAI:
         self.responses = self
         self._text = text
 
-    def create(self, **kw):
+    async def create(self, **kw):
         self.calls.append(kw)
         ann = _Obj(url="https://saveraindiankitchen.com/menu", title="Menu")
         item = _Obj(content=[_Obj(annotations=[ann, ann])])  # same page cited twice
@@ -56,9 +58,10 @@ class FakeGemini:
     def __init__(self, text="Chicken Biryani $16.99"):
         self.calls: list[dict] = []
         self.models = self
+        self.aio = self  # `.aio` is the same object's async surface
         self._text = text
 
-    def generate_content(self, **kw):
+    async def generate_content(self, **kw):
         self.calls.append(kw)
         chunk = _Obj(web=_Obj(uri="https://saveraindiankitchen.com/menu", title="Menu"))
         cand = _Obj(grounding_metadata=_Obj(grounding_chunks=[chunk]))
@@ -87,7 +90,7 @@ def test_anthropic_searches_the_web_and_returns_cited_prose(monkeypatch, platfor
     fake = FakeAnthropic()
     _use(monkeypatch, "anthropic", fake)
 
-    found = llm.research("Savera Indian Kitchen Irving Texas takeout menu")
+    found = run(llm.research("Savera Indian Kitchen Irving Texas takeout menu"))
 
     assert found is not None
     assert "Biryani" in found.text
@@ -109,7 +112,7 @@ def test_openai_research_uses_the_responses_api_not_chat_completions(monkeypatch
     fake = FakeOpenAI()
     _use(monkeypatch, "openai", fake)
 
-    found = llm.research("Savera Indian Kitchen Irving Texas takeout menu")
+    found = run(llm.research("Savera Indian Kitchen Irving Texas takeout menu"))
 
     assert found is not None and "Biryani" in found.text
     assert fake.calls[0]["tools"] == [{"type": "web_search"}]
@@ -123,7 +126,7 @@ def test_gemini_grounds_on_search_and_sends_no_response_schema(monkeypatch, plat
     fake = FakeGemini()
     _use(monkeypatch, "gemini", fake)
 
-    found = llm.research("Savera Indian Kitchen Irving Texas takeout menu")
+    found = run(llm.research("Savera Indian Kitchen Irving Texas takeout menu"))
 
     assert found is not None and "Biryani" in found.text
     cfg = fake.calls[0]["config"]
@@ -141,19 +144,19 @@ def test_the_search_cap_is_sent_wherever_the_provider_has_one(monkeypatch, platf
     OpenAI `max_tool_calls` on the request."""
     fa = FakeAnthropic()
     _use(monkeypatch, "anthropic", fa)
-    llm.research("q")
+    run(llm.research("q"))
     assert fa.calls[0]["tools"][0]["max_uses"] == llm.RESEARCH_MAX_USES
 
     fo = FakeOpenAI()
     _use(monkeypatch, "openai", fo)
-    llm.research("q")
+    run(llm.research("q"))
     assert fo.calls[0]["max_tool_calls"] == llm.RESEARCH_MAX_USES
 
     # Gemini has no cap to send: types.GoogleSearch exposes no such field. Bounded by the output
     # ceiling and the timeout instead — asserted so the gap is recorded, not merely absent.
     fg = FakeGemini()
     _use(monkeypatch, "gemini", fg)
-    llm.research("q")
+    run(llm.research("q"))
     cfg = fg.calls[0]["config"]
     assert cfg.max_output_tokens == llm.RESEARCH_MAX_TOKENS
     from google.genai import types as gtypes
@@ -180,7 +183,7 @@ def test_research_shares_the_build_turn_s_client_and_sets_its_deadline_per_reque
         return fake
 
     monkeypatch.setattr(llm, "_cached_client", spy)
-    llm.research("Savera Indian Kitchen menu")
+    run(llm.research("Savera Indian Kitchen menu"))
 
     assert keys and not any("research" in k for k in keys), (
         f"research must reuse the build turn's cache key, got {keys}"
@@ -195,20 +198,20 @@ def test_a_search_that_finds_nothing_returns_nothing(monkeypatch, platform_key):
     # reads as "the web says nothing about this" rather than "the search did not happen" — and the
     # model fills that silence with a plausible menu. An invented item becomes a real order.
     _use(monkeypatch, "anthropic", FakeAnthropic(text="   ", cite=None))
-    assert llm.research("a restaurant that does not exist") is None
+    assert run(llm.research("a restaurant that does not exist")) is None
 
 
 def test_a_provider_error_never_fails_the_turn(monkeypatch, platform_key):
     class Boom:
         messages = property(lambda self: self)
 
-        def create(self, **kw):
+        async def create(self, **kw):
             raise RuntimeError("search unavailable")
 
     _use(monkeypatch, "anthropic", Boom())
     # Degrades to "build from training data", which is exactly what happened before research
     # existed — strictly better than failing a turn the person asked for.
-    assert llm.research("anything") is None
+    assert run(llm.research("anything")) is None
 
 
 def test_brains_without_a_search_tool_are_skipped_not_faked(monkeypatch, platform_key):
@@ -217,7 +220,7 @@ def test_brains_without_a_search_tool_are_skipped_not_faked(monkeypatch, platfor
     for brain in ("groq", "ollama"):
         monkeypatch.setattr(llm, "active_brain", lambda b=brain: b)
         assert llm.research_supported(brain) is False
-        assert llm.research("Savera Indian Kitchen menu") is None
+        assert run(llm.research("Savera Indian Kitchen menu")) is None
     for brain in ("anthropic", "openai", "gemini"):
         assert llm.research_supported(brain) is True
 
@@ -225,5 +228,5 @@ def test_brains_without_a_search_tool_are_skipped_not_faked(monkeypatch, platfor
 def test_an_empty_query_never_costs_a_search(monkeypatch, platform_key):
     fake = FakeAnthropic()
     _use(monkeypatch, "anthropic", fake)
-    assert llm.research("   ") is None
+    assert run(llm.research("   ")) is None
     assert fake.calls == []  # not merely None — no request was made at all

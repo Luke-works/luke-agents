@@ -2,6 +2,8 @@
 references so the graph is always wireable, and reports `changed` correctly."""
 from fastapi.testclient import TestClient
 
+from tests.aio import returns
+
 import luke_agents.core.llm as llm
 from luke_agents.agents.workflow_agent.agent import WorkflowAgent
 from luke_agents.agents.workflow_agent.ops import repair_doc
@@ -10,7 +12,7 @@ from luke_agents.core.server import build_app
 
 
 def _client(monkeypatch, doc: WorkflowDocModel) -> TestClient:
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: doc)
+    monkeypatch.setattr(llm, "generate", returns(doc))
     monkeypatch.setattr(llm, "active_brain", lambda: "test")
     monkeypatch.setattr(llm, "active_model", lambda: "test-model")
     monkeypatch.delenv("AGENTS_API_KEY", raising=False)

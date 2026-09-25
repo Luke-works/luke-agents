@@ -9,6 +9,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.aio import record, returns
+
 import luke_agents.core.llm as llm
 from luke_agents.agents.form_agent.agent import FormAgent
 from luke_agents.agents.form_agent.schema import AssistantTurn, FormOp, SpecField
@@ -27,12 +29,12 @@ def _client(monkeypatch, turns, *, found=None, supported=True) -> tuple[TestClie
     seen: list = []
     queue = list(turns)
 
-    def fake_generate(system, user, model_cls, **kw):
+    async def fake_generate(system, user, model_cls, **kw):
         seen.append(user)
         return queue.pop(0) if queue else turns[-1]
 
     monkeypatch.setattr(llm, "generate", fake_generate)
-    monkeypatch.setattr(llm, "research", lambda q: found)
+    monkeypatch.setattr(llm, "research", returns(found))
     monkeypatch.setattr(llm, "research_supported", lambda *a, **k: supported)
     monkeypatch.setattr(llm, "active_brain", lambda: "anthropic")
     monkeypatch.setattr(llm, "active_model", lambda: "test-model")
@@ -172,7 +174,7 @@ def test_an_ordinary_turn_never_pays_for_a_search(monkeypatch):
         reply="Added a phone number.",
     )
     client, seen = _client(monkeypatch, [plain])
-    monkeypatch.setattr(llm, "research", lambda q: calls.append(q))
+    monkeypatch.setattr(llm, "research", record(calls))
 
     body = client.post("/chat", json={"message": "add a phone number", "schema": SCHEMA}).json()
 
@@ -187,7 +189,7 @@ def test_a_lifecycle_action_is_never_hijacked_by_research(monkeypatch):
     turn = AssistantTurn(reply="Publishing.", action="publish", research="something")
     calls: list[str] = []
     client, seen = _client(monkeypatch, [turn])
-    monkeypatch.setattr(llm, "research", lambda q: calls.append(q))
+    monkeypatch.setattr(llm, "research", record(calls))
 
     body = client.post("/chat", json={"message": "publish it", "schema": SCHEMA}).json()
 

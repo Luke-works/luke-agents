@@ -3,6 +3,8 @@ with LLM_TIMEOUT_SECONDS so a hung upstream call can't pin the worker forever.""
 import pytest
 from pydantic import BaseModel
 
+from tests.aio import run
+
 import luke_agents.core.llm as llm
 
 
@@ -21,13 +23,13 @@ def test_groq_client_receives_timeout(monkeypatch):
         def chat(self):  # stop before any real network call
             raise RuntimeError("constructed")
 
-    monkeypatch.setattr("groq.Groq", FakeGroq)
+    monkeypatch.setattr("groq.AsyncGroq", FakeGroq)
     monkeypatch.setattr(llm, "active_brain", lambda: "groq")
     monkeypatch.setattr(llm, "GROQ_API_KEY", "test-key")
     monkeypatch.setattr(llm, "_clients", {})  # #25: clients are cached — start fresh so FakeGroq is built
 
     with pytest.raises(RuntimeError):
-        llm.generate("system", "user", _R)
+        run(llm.generate("system", "user", _R))
 
     assert captured.get("timeout") == llm.LLM_TIMEOUT_SECONDS
     assert captured.get("api_key") == "test-key"

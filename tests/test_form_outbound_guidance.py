@@ -12,7 +12,7 @@ SCHEMA = {"entities": {}, "root": []}
 
 
 def _client(monkeypatch, captured: dict) -> TestClient:
-    def fake_generate(system, user, model, **k):
+    async def fake_generate(system, user, model, **k):
         captured["system"] = system
         return AssistantTurn(reply="ok")
 

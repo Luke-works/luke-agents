@@ -85,7 +85,7 @@ def test_endpoint_blocks_second_call_when_tenant_over_cap(monkeypatch):
 
     from luke_agents.agents.form_agent.schema import AssistantTurn
 
-    def fake_generate(system, user, model_cls, **_kw):
+    async def fake_generate(system, user, model_cls, **_kw):
         tb.record_current(2000)  # simulate the LLM layer metering this turn
         return AssistantTurn()
 
@@ -172,7 +172,7 @@ def test_endpoint_sizes_budget_by_tier_header(monkeypatch):
 
     from luke_agents.agents.form_agent.schema import AssistantTurn
 
-    def fake_generate(system, user, model_cls, **_kw):
+    async def fake_generate(system, user, model_cls, **_kw):
         tb.record_current(2000)
         return AssistantTurn()
 
