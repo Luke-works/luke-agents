@@ -1,6 +1,8 @@
 """#37 — /v1 versioned API + a curated OpenAPI document, with legacy paths kept for compatibility."""
 from fastapi.testclient import TestClient
 
+from tests.aio import raises, record, returns, run, sequence
+
 import luke_agents.core.llm as llm
 from luke_agents.agents.form_agent.agent import FormAgent
 from luke_agents.agents.form_agent.schema import AssistantTurn
@@ -12,7 +14,7 @@ SCHEMA = {"entities": {}, "root": []}
 
 
 def _client(monkeypatch, tmp_path) -> TestClient:
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: AssistantTurn(reply="hi"))
+    monkeypatch.setattr(llm, "generate", returns(AssistantTurn(reply="hi")))
     monkeypatch.setattr(llm, "active_brain", lambda: "test")
     monkeypatch.setattr(llm, "active_model", lambda: "test-model")
     monkeypatch.setattr(T, "_store", JsonlStore(str(tmp_path)))

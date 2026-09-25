@@ -13,6 +13,8 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
+from tests.aio import raises, record, returns, run, sequence
+
 import luke_agents.core.llm as llm
 
 
@@ -41,7 +43,7 @@ class FakeAnthropic:
         self.calls: list[dict] = []
         self.messages = self
 
-    def create(self, **kw):
+    async def create(self, **kw):
         self.calls.append(kw)
         if self.refuse_forced and kw.get("tool_choice", {}).get("type") in ("tool", "any"):
             err = Exception('tool_choice: type "tool" and "any" are not supported for this model.')
@@ -67,7 +69,7 @@ def test_a_model_that_refuses_a_forced_choice_still_answers(monkeypatch):
     fake = FakeAnthropic(refuse_forced=True)
     _use(monkeypatch, fake)
 
-    out = llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1")
+    out = run(llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1"))
 
     assert out.reply == "hi"
     # Forced first — it is the only way to guarantee the shape — then auto.
@@ -78,8 +80,8 @@ def test_the_refusal_is_remembered_so_every_turn_does_not_pay_for_it(monkeypatch
     fake = FakeAnthropic(refuse_forced=True)
     _use(monkeypatch, fake)
 
-    llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1")
-    llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1")
+    run(llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1"))
+    run(llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1"))
 
     # Two turns, three calls — not four: the second turn went straight to auto.
     assert [c["tool_choice"]["type"] for c in fake.calls] == ["tool", "auto", "auto"]
@@ -90,7 +92,7 @@ def test_a_model_that_accepts_forcing_is_never_downgraded(monkeypatch):
     fake = FakeAnthropic(refuse_forced=False)
     _use(monkeypatch, fake)
 
-    llm._anthropic("sys", "user", Answer, 0.4, model="claude-haiku-4-5")
+    run(llm._anthropic("sys", "user", Answer, 0.4, model="claude-haiku-4-5"))
 
     assert [c["tool_choice"]["type"] for c in fake.calls] == ["tool"]
     assert "claude-haiku-4-5" not in llm._ANTHROPIC_NO_FORCED_TOOL
@@ -102,7 +104,7 @@ def test_on_the_auto_path_a_prose_answer_is_still_held_to_the_schema(monkeypatch
     fake = FakeAnthropic(refuse_forced=True, answer_as_text=True)
     _use(monkeypatch, fake)
 
-    out = llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1")
+    out = run(llm._anthropic("sys", "user", Answer, 0.4, model="claude-thinky-1"))
     assert out.reply == "hi"
 
 
@@ -111,7 +113,7 @@ def test_any_other_400_still_fails_loudly(monkeypatch):
     # weaker guarantees — the turn would come back shaped differently and the agent would act on
     # it. Only the tool_choice refusal may fall back.
     class Unrelated(FakeAnthropic):
-        def create(self, **kw):
+        async def create(self, **kw):
             self.calls.append(kw)
             err = Exception("model: 'claude-nope' does not exist")
             err.status_code = 400
@@ -121,5 +123,5 @@ def test_any_other_400_still_fails_loudly(monkeypatch):
     _use(monkeypatch, fake)
 
     with pytest.raises(Exception, match="does not exist"):
-        llm._anthropic("sys", "user", Answer, 0.4, model="claude-nope")
+        run(llm._anthropic("sys", "user", Answer, 0.4, model="claude-nope"))
     assert len(fake.calls) == 1, "it must not retry a failure it does not understand"

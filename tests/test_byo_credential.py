@@ -14,6 +14,8 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 import luke_agents.core.credential as cred
+from tests.aio import raises, record, returns, run, sequence
+
 import luke_agents.core.llm as llm
 
 
@@ -161,10 +163,10 @@ def _capture_groq(monkeypatch, seen):
         def completions(self):
             return self
 
-        def create(self, **_kwargs):
+        async def create(self, **_kwargs):
             raise RuntimeError(f"called with {self.api_key}")
 
-    monkeypatch.setattr("groq.Groq", FakeGroq)
+    monkeypatch.setattr("groq.AsyncGroq", FakeGroq)
     monkeypatch.setattr(llm, "GROQ_API_KEY", None)
 
 
@@ -178,7 +180,7 @@ def test_two_workspaces_never_share_a_provider_client(monkeypatch):
         token = cred.set_current(cred.Credential(provider="groq", api_key=key))
         try:
             with pytest.raises(RuntimeError):
-                llm.generate("json", "u", _R)
+                run(llm.generate("json", "u", _R))
         finally:
             cred.reset(token)
 
@@ -195,7 +197,7 @@ def test_each_workspace_is_billed_on_its_own_key(monkeypatch):
     token = cred.set_current(cred.Credential(provider="groq", api_key="tenant-b-key"))
     try:
         with pytest.raises(RuntimeError, match="tenant-b-key"):
-            llm.generate("json", "u", _R)
+            run(llm.generate("json", "u", _R))
     finally:
         cred.reset(token)
 
@@ -206,7 +208,7 @@ def test_one_workspaces_failures_do_not_open_another_workspaces_circuit(monkeypa
     monkeypatch.setattr(llm, "LLM_BREAKER_THRESHOLD", 2)
     monkeypatch.setattr(llm, "LLM_MAX_RETRIES", 0)
 
-    def boom():
+    async def boom():
         raise TimeoutError("provider timeout")  # transient -> counts toward the breaker
 
     a = cred.Credential(provider="groq", api_key="broken-key")
@@ -214,23 +216,23 @@ def test_one_workspaces_failures_do_not_open_another_workspaces_circuit(monkeypa
 
     for _ in range(2):
         with pytest.raises(TimeoutError):
-            llm._run_brain("groq", boom, f"groq:{a.fingerprint}")
+            run(llm._run_brain("groq", boom, f"groq:{a.fingerprint}"))
 
     # A is now open...
     with pytest.raises(llm.BrainUnavailable):
-        llm._run_brain("groq", boom, f"groq:{a.fingerprint}")
+        run(llm._run_brain("groq", boom, f"groq:{a.fingerprint}"))
     # ...B is untouched and still gets to call the provider.
     with pytest.raises(TimeoutError):
-        llm._run_brain("groq", boom, f"groq:{b.fingerprint}")
+        run(llm._run_brain("groq", boom, f"groq:{b.fingerprint}"))
 
 
 def test_run_brain_still_defaults_to_a_process_wide_scope():
     """Back-compat: the env/platform path (and existing callers) keep one breaker per brain."""
-    def boom():
+    async def boom():
         raise TimeoutError("x")
 
     with pytest.raises(TimeoutError):
-        llm._run_brain("groq", boom)
+        run(llm._run_brain("groq", boom))
     assert "groq" in llm._breaker
 
 
@@ -243,14 +245,14 @@ def test_agent_model_override_is_ignored_when_the_workspace_chose_a_model(monkey
     own choice wins."""
     captured: dict = {}
 
-    def fake_groq(system, user, response_model, temperature, model=None, *, api_key=None, allow_fallback=True):
+    async def fake_groq(system, user, response_model, temperature, model=None, *, api_key=None, allow_fallback=True):
         captured.update(model=model, allow_fallback=allow_fallback)
         return _R()
 
     monkeypatch.setattr(llm, "_groq", fake_groq)
     token = cred.set_current(cred.Credential(provider="groq", api_key="k", model="workspace-choice"))
     try:
-        llm.generate("json", "u", _R, model="platform-cheap-model")
+        run(llm.generate("json", "u", _R, model="platform-cheap-model"))
     finally:
         cred.reset(token)
     assert captured["model"] == "workspace-choice"
@@ -262,14 +264,14 @@ def test_agent_model_override_is_ignored_when_the_workspace_chose_a_model(monkey
 def test_agent_model_override_still_applies_on_the_platform_path(monkeypatch):
     captured: dict = {}
 
-    def fake_groq(system, user, response_model, temperature, model=None, *, api_key=None, allow_fallback=True):
+    async def fake_groq(system, user, response_model, temperature, model=None, *, api_key=None, allow_fallback=True):
         captured.update(model=model, allow_fallback=allow_fallback)
         return _R()
 
     monkeypatch.setattr(llm, "_groq", fake_groq)
     monkeypatch.setattr(llm, "GROQ_API_KEY", "platform-key")
     monkeypatch.delenv("AGENTS_REQUIRE_CREDENTIAL", raising=False)
-    llm.generate("json", "u", _R, model="platform-cheap-model")
+    run(llm.generate("json", "u", _R, model="platform-cheap-model"))
     assert captured["model"] == "platform-cheap-model"
     assert captured["allow_fallback"] is True
 
@@ -289,20 +291,20 @@ def test_groq_does_not_fall_back_to_another_model_when_the_workspace_picked_one(
         def completions(self):
             return self
 
-        def create(self, **kwargs):
+        async def create(self, **kwargs):
             tried.append(kwargs["model"])
             raise RuntimeError("no such model")
 
-    monkeypatch.setattr("groq.Groq", FakeGroq)
+    monkeypatch.setattr("groq.AsyncGroq", FakeGroq)
     monkeypatch.setattr(llm, "GROQ_FALLBACK_MODEL", "platform-fallback")
 
     with pytest.raises(RuntimeError):
-        llm._groq("json", "u", _R, 0.3, "workspace-choice", api_key="k", allow_fallback=False)
+        run(llm._groq("json", "u", _R, 0.3, "workspace-choice", api_key="k", allow_fallback=False))
     assert tried == ["workspace-choice"]
 
     tried.clear()
     with pytest.raises(RuntimeError):
-        llm._groq("json", "u", _R, 0.3, "primary", api_key="k", allow_fallback=True)
+        run(llm._groq("json", "u", _R, 0.3, "primary", api_key="k", allow_fallback=True))
     assert tried == ["primary", "platform-fallback"]
 
 
@@ -318,7 +320,7 @@ def test_generate_refuses_rather_than_spending_a_platform_key(monkeypatch):
 
     monkeypatch.setattr(llm, "_groq", explode)
     with pytest.raises(cred.CredentialRequired):
-        llm.generate("json", "u", _R)
+        run(llm.generate("json", "u", _R))
 
 
 # --------------------------------------------------------------------------- #
@@ -348,12 +350,12 @@ def test_anthropic_forces_the_schema_and_returns_a_validated_object(monkeypatch)
         def messages(self):
             return self
 
-        def create(self, **kwargs):
+        async def create(self, **kwargs):
             captured.update(kwargs)
             return _Resp()
 
-    monkeypatch.setattr("anthropic.Anthropic", FakeAnthropic)
-    out = llm._anthropic("sys", "usr", _Shaped, 0.3, "claude-x", api_key="sk-ant-1")
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAnthropic)
+    out = run(llm._anthropic("sys", "usr", _Shaped, 0.3, "claude-x", api_key="sk-ant-1"))
 
     assert out == _Shaped(title="Contact form", count=3)
     assert captured["api_key"] == "sk-ant-1"
@@ -378,12 +380,12 @@ def test_anthropic_raises_rather_than_inventing_an_empty_object(monkeypatch):
         def messages(self):
             return self
 
-        def create(self, **_kwargs):
+        async def create(self, **_kwargs):
             return _Resp()
 
-    monkeypatch.setattr("anthropic.Anthropic", FakeAnthropic)
+    monkeypatch.setattr("anthropic.AsyncAnthropic", FakeAnthropic)
     with pytest.raises(ValueError, match="tool_use"):
-        llm._anthropic("sys", "usr", _Shaped, 0.3, api_key="k")
+        run(llm._anthropic("sys", "usr", _Shaped, 0.3, api_key="k"))
 
 
 # --------------------------------------------------------------------------- #
@@ -399,7 +401,7 @@ def _app(monkeypatch, tmp_path, seen):
     from luke_agents.core.server import build_app
     from luke_agents.core.transcripts import JsonlStore
 
-    def _generate(*_a, **_k):
+    async def _generate(*_a, **_k):
         seen.append(cred.current())      # what the agent's turn would have run on
         return AssistantTurn(reply="hi")
 

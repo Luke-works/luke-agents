@@ -2,6 +2,8 @@
 to run, and when it does it leaves the form untouched — even if the model also emitted field ops."""
 from fastapi.testclient import TestClient
 
+from tests.aio import raises, record, returns, run, sequence
+
 import luke_agents.core.llm as llm
 from luke_agents.agents.form_agent.agent import FormAgent
 from luke_agents.agents.form_agent.schema import AssistantTurn, FormOp, SpecField
@@ -11,7 +13,7 @@ SCHEMA = {"entities": {}, "root": []}
 
 
 def _client(monkeypatch, turn: AssistantTurn) -> TestClient:
-    monkeypatch.setattr(llm, "generate", lambda *a, **k: turn)
+    monkeypatch.setattr(llm, "generate", returns(turn))
     monkeypatch.setattr(llm, "active_brain", lambda: "test")
     monkeypatch.setattr(llm, "active_model", lambda: "test-model")
     monkeypatch.delenv("AGENTS_API_KEY", raising=False)

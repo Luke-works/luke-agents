@@ -10,6 +10,8 @@ import json
 import time
 import uuid
 
+from starlette.concurrency import run_in_threadpool
+
 from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
@@ -63,11 +65,11 @@ class EmailAgent(Agent):
         router = APIRouter(tags=["email"])
 
         @router.post("/chat", response_model=ChatResponse)
-        def chat(req: ChatRequest, request: Request) -> ChatResponse:
+        async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             llm.reset_usage()  # cumulative usage: never inherit a reused thread's last turn
 
@@ -97,7 +99,7 @@ class EmailAgent(Agent):
                 ))
 
             try:
-                doc = llm.generate(SYSTEM, user_msg, EmailDoc, temperature=0.4)
+                doc = await llm.generate(SYSTEM, user_msg, EmailDoc, temperature=0.4)
             except Exception as exc:  # invalid JSON, model/network error, rate limit, etc.
                 # Record failures too (excluded from training, useful for analysis).
                 _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
@@ -132,11 +134,11 @@ class EmailAgent(Agent):
             )
 
         @router.post("/testdata", response_model=TestDataResponse)
-        def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
+        async def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
             """Generate plausible sample values for each {{var}} in the email, to
             drive the builder's live preview + test send."""
             tenant = resolve_tenant(request)
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             try:
                 doc = EmailDoc.model_validate(req.doc) if req.doc else EmailDoc()
@@ -148,7 +150,7 @@ class EmailAgent(Agent):
                 # Nothing to fill — return empty sample sets without a paid call.
                 return TestDataResponse(samples=[TestDataItem() for _ in range(count)], brain=llm.active_brain())
             try:
-                turn = llm.generate(
+                turn = await llm.generate(
                     TESTDATA_SYSTEM, build_testdata_message(variables, count), TestDataTurn, temperature=0.6
                 )
             except Exception as exc:  # noqa: BLE001

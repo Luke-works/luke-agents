@@ -1,6 +1,8 @@
 """#24 / #25 — LLM transient-retry + circuit breaker, and provider-client reuse."""
 import pytest
 
+from tests.aio import raises, record, returns, run, sequence
+
 import luke_agents.core.llm as llm
 
 
@@ -49,13 +51,13 @@ def test_run_brain_retries_transient_then_succeeds(monkeypatch):
     monkeypatch.setattr(llm, "LLM_MAX_RETRIES", 3)
     n = {"c": 0}
 
-    def fn():
+    async def fn():
         n["c"] += 1
         if n["c"] < 3:
             raise Transient()
         return "ok"
 
-    assert llm._run_brain("groq", fn) == "ok"
+    assert run(llm._run_brain("groq", fn)) == "ok"
     assert n["c"] == 3
 
 
@@ -63,12 +65,12 @@ def test_run_brain_does_not_retry_or_trip_breaker_on_non_transient(monkeypatch):
     monkeypatch.setattr(llm, "LLM_MAX_RETRIES", 3)
     n = {"c": 0}
 
-    def fn():
+    async def fn():
         n["c"] += 1
         raise ValueError("validation error")
 
     with pytest.raises(ValueError):
-        llm._run_brain("groq", fn)
+        run(llm._run_brain("groq", fn))
     assert n["c"] == 1                                  # not retried
     assert llm._breaker.get("groq", {}).get("fails", 0) == 0  # breaker untouched
 
@@ -81,17 +83,17 @@ def test_breaker_opens_and_fails_fast(monkeypatch):
     monkeypatch.setattr(llm, "LLM_BREAKER_COOLDOWN_SECONDS", 60)
     calls = {"n": 0}
 
-    def fn():
+    async def fn():
         calls["n"] += 1
         raise Transient()
 
     for _ in range(3):
         with pytest.raises(Transient):
-            llm._run_brain("groq", fn)
+            run(llm._run_brain("groq", fn))
     assert calls["n"] == 3
     # Circuit is now open → fail fast WITHOUT invoking fn again.
     with pytest.raises(llm.BrainUnavailable):
-        llm._run_brain("groq", fn)
+        run(llm._run_brain("groq", fn))
     assert calls["n"] == 3
 
 
@@ -100,13 +102,13 @@ def test_breaker_resets_on_success(monkeypatch):
     monkeypatch.setattr(llm, "LLM_BREAKER_THRESHOLD", 3)
     state = {"fail": True}
 
-    def fn():
+    async def fn():
         if state["fail"]:
             raise Transient()
         return "ok"
 
     with pytest.raises(Transient):
-        llm._run_brain("g", fn)          # fails = 1
+        run(llm._run_brain("g", fn))          # fails = 1
     state["fail"] = False
-    assert llm._run_brain("g", fn) == "ok"
+    assert run(llm._run_brain("g", fn)) == "ok"
     assert llm._breaker["g"]["fails"] == 0  # a success clears the failure count

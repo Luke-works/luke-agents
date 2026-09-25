@@ -8,6 +8,8 @@ import time
 import uuid
 from pathlib import Path
 
+from starlette.concurrency import run_in_threadpool
+
 from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
@@ -72,11 +74,11 @@ class FormAgent(Agent):
         router = APIRouter(tags=["form"])
 
         @router.post("/chat", response_model=ChatResponse)
-        def chat(req: ChatRequest, request: Request) -> ChatResponse:
+        async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             # Per-tenant DAILY token cap (D5): reject if this org already hit today's ceiling.
             tokenbudget.enforce(tenant, resolve_tier(request))
             # Threadpool workers are REUSED, and usage is cumulative across a turn's provider
@@ -115,7 +117,7 @@ class FormAgent(Agent):
                 ))
 
             try:
-                turn = llm.generate(system, user_msg, AssistantTurn, temperature=0.4)
+                turn = await llm.generate(system, user_msg, AssistantTurn, temperature=0.4)
             except Exception as exc:  # invalid JSON, model/network error, rate limit, etc.
                 # Record failures too (excluded from training, useful for analysis).
                 _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
@@ -135,13 +137,13 @@ class FormAgent(Agent):
             sources: list[dict] = []
             research_failed = False
             if turn.research and not turn.action:
-                found = llm.research(turn.research)
+                found = await llm.research(turn.research)
                 if found is not None:
                     sources = found.sources
                     followup = build_research_message(turn.research, found.text)
                     messages.append({"role": "user", "content": followup})
                     try:
-                        turn = llm.generate(system, f"{user_msg}\n\n{followup}", AssistantTurn,
+                        turn = await llm.generate(system, f"{user_msg}\n\n{followup}", AssistantTurn,
                                             temperature=0.4)
                     except Exception as exc:  # noqa: BLE001
                         _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
@@ -200,18 +202,18 @@ class FormAgent(Agent):
             )
 
         @router.post("/testdata", response_model=TestDataResponse)
-        def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
+        async def testdata(req: TestDataRequest, request: Request) -> TestDataResponse:
             """Generate valid (should pass) or invalid (should be rejected) test data
             for the current form, to drive the builder's Test runs."""
             tenant = resolve_tenant(request)
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             spec, *_ = schema_to_spec(req.schema)
             if req.title:
                 spec.title = req.title
             count = max(1, min(req.count or 1, 5))  # cap so one call can't blow the budget
             try:
-                turn = llm.generate(
+                turn = await llm.generate(
                     TESTDATA_SYSTEM, build_testdata_message(spec, req.mode, count), TestDataTurn, temperature=0.6
                 )
             except Exception as exc:  # noqa: BLE001
@@ -220,11 +222,11 @@ class FormAgent(Agent):
             return TestDataResponse(datasets=datasets, brain=llm.active_brain())
 
         @router.post("/feedback")
-        def feedback(req: FeedbackRequest, request: Request) -> dict:
+        async def feedback(req: FeedbackRequest, request: Request) -> dict:
             """Label a recorded turn (kept/undone, 👍/👎) so the exporter can keep
             only good training examples. Safe no-op if transcripts are disabled."""
             tenant = resolve_tenant(request)
-            enforce(_rate_key(request, tenant))  # bound writes (was unauthenticated + unthrottled)
+            await run_in_threadpool(enforce, _rate_key(request, tenant))  # bound writes (was unauthenticated + unthrottled)
             found = safe_record_feedback(
                 req.turn_id, Feedback(accepted=req.accepted, rating=req.rating, note=req.note)
             )

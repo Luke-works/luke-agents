@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 import uuid
 
+from starlette.concurrency import run_in_threadpool
+
 from fastapi import APIRouter, Request
 
 from ...core import Agent, AgentMeta
@@ -49,11 +51,11 @@ class WorkflowAgent(Agent):
         router = APIRouter(tags=["workflow"])
 
         @router.post("/chat", response_model=ChatResponse)
-        def chat(req: ChatRequest, request: Request) -> ChatResponse:
+        async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before any (paid) LLM call.
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
             llm.reset_usage()  # cumulative usage: never inherit a reused thread's last turn
 
@@ -79,7 +81,7 @@ class WorkflowAgent(Agent):
                 ))
 
             try:
-                doc = llm.generate(SYSTEM, user_msg, WorkflowDocModel, temperature=0.3)
+                doc = await llm.generate(SYSTEM, user_msg, WorkflowDocModel, temperature=0.3)
             except Exception as exc:  # invalid JSON, model/network error, rate limit, etc.
                 _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
                 # Straight to the shared mapper, with this agent's wording. Branching on

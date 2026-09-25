@@ -25,6 +25,7 @@ typed object. All form/agent specifics live in the agent, not here.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -208,15 +209,29 @@ def _touch(key: str) -> None:
 
 def _close_quietly(client) -> None:
     """Release an evicted client's sockets. Best-effort: a provider SDK that exposes no
-    close() (or throws on it) must never break the turn that triggered the eviction."""
-    for name in ("close", "_close"):
+    close() (or throws on it) must never break the turn that triggered the eviction.
+
+    The async SDK clients return a COROUTINE from close(). Calling that and dropping it would
+    close nothing — the sockets would leak exactly as they did before this cache was bounded —
+    and would raise "coroutine was never awaited" on the way out. Eviction happens inside a
+    turn that is already on the event loop, so hand the coroutine to the loop and let it finish
+    in the background; nobody is waiting on a socket teardown.
+    """
+    for name in ("close", "aclose", "_close"):
         fn = getattr(client, name, None)
-        if callable(fn):
-            try:
-                fn()
-            except Exception:  # noqa: BLE001
-                log.debug("llm: closing an evicted provider client failed", exc_info=True)
-            return
+        if not callable(fn):
+            continue
+        try:
+            out = fn()
+            if asyncio.iscoroutine(out):
+                try:
+                    asyncio.get_running_loop().create_task(out)
+                except RuntimeError:
+                    # No loop (a test, or shutdown): run it to completion here instead.
+                    asyncio.run(out)
+        except Exception:  # noqa: BLE001
+            log.debug("llm: closing an evicted provider client failed", exc_info=True)
+        return
 
 
 def _cached_client(key: str, factory):
@@ -293,7 +308,7 @@ def _breaker_failure(scope: str, label: str) -> None:
             log.warning("llm: %s brain circuit OPEN after %d consecutive failures", label, st["fails"])
 
 
-def _run_brain(brain: str, fn, scope: str | None = None):
+async def _run_brain(brain: str, fn, scope: str | None = None):
     """Circuit-breaker gate + bounded transient-retry around one brain call (#24). Non-transient
     errors (validation, 429) surface immediately and do NOT trip the breaker; only exhausted
     transient failures count toward opening it.
@@ -306,7 +321,7 @@ def _run_brain(brain: str, fn, scope: str | None = None):
     last: BaseException | None = None
     for i in range(attempts):
         try:
-            out = fn()
+            out = await fn()
             _breaker_success(scope)
             return out
         except Exception as exc:  # noqa: BLE001
@@ -317,7 +332,9 @@ def _run_brain(brain: str, fn, scope: str | None = None):
                 break
             log.warning("llm: transient %s on %s brain (attempt %d/%d): %s",
                         type(exc).__name__, brain, i + 1, attempts, exc)
-            time.sleep(LLM_RETRY_BASE_SECONDS * (2 ** i))
+            # asyncio.sleep, not time.sleep: this runs ON the event loop now, and a
+            # blocking sleep here would stall every other request in the worker.
+            await asyncio.sleep(LLM_RETRY_BASE_SECONDS * (2 ** i))
     _breaker_failure(scope, brain)
     raise last  # type: ignore[misc]
 
@@ -385,7 +402,7 @@ def active_model() -> str:
     return _default_model(active_brain())
 
 
-def generate(
+async def generate(
     system: str,
     user: str,
     response_model: type[T],
@@ -432,17 +449,17 @@ def generate(
 
     # #24: each brain call goes through the circuit-breaker + transient-retry wrapper.
     if brain == "groq":
-        return _run_brain(brain, lambda: _groq(system, user, response_model, temperature, chosen,
+        return await _run_brain(brain, lambda: _groq(system, user, response_model, temperature, chosen,
                                                api_key=api_key, allow_fallback=allow_fallback), scope)
     if brain == "openai":  # nano ignores temperature
-        return _run_brain(brain, lambda: _openai(system, user, response_model, chosen, api_key=api_key), scope)
+        return await _run_brain(brain, lambda: _openai(system, user, response_model, chosen, api_key=api_key), scope)
     if brain == "anthropic":
-        return _run_brain(brain, lambda: _anthropic(system, user, response_model, temperature, chosen,
+        return await _run_brain(brain, lambda: _anthropic(system, user, response_model, temperature, chosen,
                                                     api_key=api_key), scope)
     if brain == "gemini":
-        return _run_brain(brain, lambda: _gemini(system, user, response_model, temperature, chosen,
+        return await _run_brain(brain, lambda: _gemini(system, user, response_model, temperature, chosen,
                                                  api_key=api_key), scope)
-    return _run_brain(brain, lambda: _ollama(system, user, response_model, temperature, chosen), scope)
+    return await _run_brain(brain, lambda: _ollama(system, user, response_model, temperature, chosen), scope)
 
 
 @dataclass(frozen=True)
@@ -477,7 +494,7 @@ def research_supported(brain: str | None = None) -> bool:
     return (brain or active_brain()) in RESEARCH_BRAINS
 
 
-def research(query: str) -> "Research | None":
+async def research(query: str) -> "Research | None":
     """Answer `query` from the live web, or None when this brain cannot search.
 
     Deliberately NOT part of :func:`generate`. Every brain's structured path pins the output
@@ -511,11 +528,11 @@ def research(query: str) -> "Research | None":
 
     try:
         if brain == "anthropic":
-            found = _research_anthropic(query, chosen, api_key)
+            found = await _research_anthropic(query, chosen, api_key)
         elif brain == "openai":
-            found = _research_openai(query, chosen, api_key)
+            found = await _research_openai(query, chosen, api_key)
         else:
-            found = _research_gemini(query, chosen, api_key)
+            found = await _research_gemini(query, chosen, api_key)
     except Exception as exc:  # noqa: BLE001 - research is an enhancement, never a failure mode
         log.warning("research: %s search failed, building without it: %s", brain, exc)
         _note_research(brain, "empty")
@@ -534,9 +551,9 @@ def _note_research(brain: str, outcome: str) -> None:
         pass
 
 
-def _research_anthropic(query: str, model: str, api_key: str | None) -> "Research | None":
+async def _research_anthropic(query: str, model: str, api_key: str | None) -> "Research | None":
     """Claude with Anthropic's server-side search: it runs the searches and returns cited prose."""
-    from anthropic import Anthropic
+    from anthropic import AsyncAnthropic
 
     # The SAME cached client as the build turn, with the longer deadline passed PER REQUEST.
     # A separate `anthropic-research` cache key gave every researching workspace TWO entries in a
@@ -544,8 +561,8 @@ def _research_anthropic(query: str, model: str, api_key: str | None) -> "Researc
     # rebuilding TLS + DNS on every turn. The client differed only by its timeout, and the SDK
     # takes that per call.
     client = _cached_client(_client_key("anthropic", api_key),
-                            lambda: Anthropic(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS))
-    resp = client.messages.create(
+                            lambda: AsyncAnthropic(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS))
+    resp = await client.messages.create(
         timeout=RESEARCH_TIMEOUT_SECONDS,
         model=model,
         max_tokens=RESEARCH_MAX_TOKENS,
@@ -569,15 +586,15 @@ def _research_anthropic(query: str, model: str, api_key: str | None) -> "Researc
     return _finish(" ".join(t.strip() for t in text if t.strip()), sources)
 
 
-def _research_openai(query: str, model: str, api_key: str | None) -> "Research | None":
+async def _research_openai(query: str, model: str, api_key: str | None) -> "Research | None":
     """OpenAI's ``web_search`` lives on the RESPONSES API, not the chat-completions call the build
     turn uses - chat completions only searches on the dedicated ``*-search-preview`` models. A
     separate research call is what makes that difference invisible to the agent."""
-    from openai import OpenAI
+    from openai import AsyncOpenAI
 
     client = _cached_client(_client_key("openai", api_key),  # shared with the build turn
-                            lambda: OpenAI(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS))
-    resp = client.responses.create(
+                            lambda: AsyncOpenAI(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS))
+    resp = await client.responses.create(
         timeout=RESEARCH_TIMEOUT_SECONDS,
         model=model,
         instructions=RESEARCH_SYSTEM,
@@ -600,7 +617,7 @@ def _research_openai(query: str, model: str, api_key: str | None) -> "Research |
     return _finish(getattr(resp, "output_text", "") or "", sources)
 
 
-def _research_gemini(query: str, model: str, api_key: str | None) -> "Research | None":
+async def _research_gemini(query: str, model: str, api_key: str | None) -> "Research | None":
     """Gemini grounded on Google Search. NOTE: grounding and ``response_schema`` are mutually
     exclusive on this API, so this call sends no schema at all - the reason research is a separate
     pass rather than a flag on the build turn."""
@@ -611,7 +628,8 @@ def _research_gemini(query: str, model: str, api_key: str | None) -> "Research |
         api_key=api_key,
         http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),
     ))
-    resp = client.models.generate_content(
+    # `.aio` is the same client's async surface — one cached object serves both paths.
+    resp = await client.aio.models.generate_content(
         model=model,
         contents=query,
         config=types.GenerateContentConfig(
@@ -662,12 +680,12 @@ def _client_key(brain: str, api_key: str | None) -> str:
     return f"{brain}:{digest}"
 
 
-def _groq(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None,
+async def _groq(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None,
           *, api_key: str | None = None, allow_fallback: bool = True) -> T:
-    from groq import Groq
+    from groq import AsyncGroq
 
     key = api_key if api_key is not None else GROQ_API_KEY
-    client = _cached_client(_client_key("groq", key), lambda: Groq(api_key=key, timeout=LLM_TIMEOUT_SECONDS))  # #25
+    client = _cached_client(_client_key("groq", key), lambda: AsyncGroq(api_key=key, timeout=LLM_TIMEOUT_SECONDS))  # #25
     # Groq's json_object response_format returns a 400 unless the word "json" appears somewhere
     # in the messages. Most prompts already describe a JSON output, but append a minimal
     # instruction for any that don't (e.g. the test-data prompt) so the request is never rejected.
@@ -689,7 +707,7 @@ def _groq(system: str, user: str, response_model: type[T], temperature: float, m
     last_err: Exception | None = None
     for model in models:
         try:
-            resp = client.chat.completions.create(
+            resp = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 response_format={"type": "json_object"},
@@ -703,7 +721,7 @@ def _groq(system: str, user: str, response_model: type[T], temperature: float, m
     raise last_err  # type: ignore[misc]
 
 
-def _openai(system: str, user: str, response_model: type[T], model: str | None = None,
+async def _openai(system: str, user: str, response_model: type[T], model: str | None = None,
             *, api_key: str | None = None) -> T:
     """OpenAI GPT-5 nano via Structured Outputs (returns a validated Pydantic model).
 
@@ -711,11 +729,11 @@ def _openai(system: str, user: str, response_model: type[T], model: str | None =
     `reasoning_effort` is sent only when OPENAI_REASONING_EFFORT is set, and we
     retry without it if the model rejects it (some nano variants 400 on it).
     """
-    from openai import OpenAI
+    from openai import AsyncOpenAI
 
     key = api_key if api_key is not None else OPENAI_API_KEY
     client = _cached_client(_client_key("openai", key),
-                            lambda: OpenAI(api_key=key, timeout=LLM_TIMEOUT_SECONDS))  # #25
+                            lambda: AsyncOpenAI(api_key=key, timeout=LLM_TIMEOUT_SECONDS))  # #25
     kwargs: dict = {
         "model": model or OPENAI_MODEL,
         "messages": [
@@ -728,12 +746,12 @@ def _openai(system: str, user: str, response_model: type[T], model: str | None =
         kwargs["reasoning_effort"] = OPENAI_REASONING_EFFORT
 
     try:
-        completion = client.beta.chat.completions.parse(**kwargs)
+        completion = await client.beta.chat.completions.parse(**kwargs)
     except Exception:  # noqa: BLE001
         if "reasoning_effort" not in kwargs:
             raise
         kwargs.pop("reasoning_effort")  # model doesn't accept it — retry plainly
-        completion = client.beta.chat.completions.parse(**kwargs)
+        completion = await client.beta.chat.completions.parse(**kwargs)
 
     msg = completion.choices[0].message
     _u = getattr(completion, "usage", None)
@@ -785,7 +803,7 @@ def _json_object(text: str) -> dict | None:
     return out if isinstance(out, dict) else None
 
 
-def _anthropic(system: str, user: str, response_model: type[T], _temperature: float,
+async def _anthropic(system: str, user: str, response_model: type[T], _temperature: float,
                model: str | None = None, *, api_key: str | None = None) -> T:
     """Claude via forced tool use — the provider's way of guaranteeing a schema-shaped result.
 
@@ -794,11 +812,11 @@ def _anthropic(system: str, user: str, response_model: type[T], _temperature: fl
     input IS the validated object. Costs the schema in input tokens, exactly like OpenAI's
     and Gemini's structured modes.
     """
-    from anthropic import Anthropic
+    from anthropic import AsyncAnthropic
 
     key = api_key if api_key is not None else ANTHROPIC_API_KEY
     client = _cached_client(_client_key("anthropic", key),
-                            lambda: Anthropic(api_key=key, timeout=LLM_TIMEOUT_SECONDS))  # #25
+                            lambda: AsyncAnthropic(api_key=key, timeout=LLM_TIMEOUT_SECONDS))  # #25
     chosen = model or ANTHROPIC_MODEL
     tool = {
         "name": "respond",
@@ -806,11 +824,11 @@ def _anthropic(system: str, user: str, response_model: type[T], _temperature: fl
         "input_schema": response_model.model_json_schema(),
     }
 
-    def call(forced: bool):
+    async def call(forced: bool):
         # NOTE: no `temperature`. anthropic 1.x removed it from messages.create and the method
         # takes no **kwargs, so passing it is a TypeError on every turn. Forced tool use already
         # pins the output shape, which is all `temperature` was doing for us on the other brains.
-        return client.messages.create(
+        return await client.messages.create(
             model=chosen,
             max_tokens=ANTHROPIC_MAX_TOKENS,  # Anthropic requires an explicit output cap
             system=system,
@@ -829,13 +847,13 @@ def _anthropic(system: str, user: str, response_model: type[T], _temperature: fl
     # round trip on every turn to rediscover it is the kind of cost nobody sees until the bill.
     forced = chosen not in _ANTHROPIC_NO_FORCED_TOOL
     try:
-        resp = call(forced)
+        resp = await call(forced)
     except Exception as exc:  # noqa: BLE001 - re-raised below unless it is THIS refusal
         if not (forced and _rejects_forced_tool(exc)):
             raise
         log.info("anthropic: %s does not accept a forced tool choice; using auto", chosen)
         _ANTHROPIC_NO_FORCED_TOOL.add(chosen)
-        resp = call(False)
+        resp = await call(False)
 
     _u = getattr(resp, "usage", None)
     _note_usage("anthropic", chosen, getattr(_u, "input_tokens", None), getattr(_u, "output_tokens", None))
@@ -852,7 +870,7 @@ def _anthropic(system: str, user: str, response_model: type[T], _temperature: fl
     raise ValueError("anthropic returned no tool_use block")
 
 
-def _gemini(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None,
+async def _gemini(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None,
             *, api_key: str | None = None) -> T:
     from google import genai
     from google.genai import types
@@ -862,7 +880,7 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float,
         api_key=key,
         http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),  # ms
     ))
-    resp = client.models.generate_content(
+    resp = await client.aio.models.generate_content(
         model=model or GEMINI_MODEL,
         contents=user,
         config=types.GenerateContentConfig(
@@ -878,7 +896,7 @@ def _gemini(system: str, user: str, response_model: type[T], temperature: float,
     return response_model.model_validate_json(resp.text)
 
 
-def _ollama(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
+async def _ollama(system: str, user: str, response_model: type[T], temperature: float, model: str | None = None) -> T:
     import ollama
 
     # No key: Ollama is a local daemon, so one cached client for the process is correct.

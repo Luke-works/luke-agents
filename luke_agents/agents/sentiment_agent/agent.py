@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import os
 
+from starlette.concurrency import run_in_threadpool
+
 from fastapi import APIRouter, HTTPException, Request
 
 from ...core import Agent, AgentMeta
@@ -93,7 +95,7 @@ def _map_brain_error(exc: Exception) -> HTTPException:
     )
 
 
-def _analyze_doc_sections(chunks: list[str], model: str | None) -> list[SentimentAnalysis]:
+async def _analyze_doc_sections(chunks: list[str], model: str | None) -> list[SentimentAnalysis]:
     """Classify document sections in batches (one LLM call per up-to-_BATCH_MAX
     sections), returning one analysis per chunk, aligned by position. Padding fills
     any slot the model omits so every section gets a result."""
@@ -101,7 +103,7 @@ def _analyze_doc_sections(chunks: list[str], model: str | None) -> list[Sentimen
     for i in range(0, len(chunks), _BATCH_MAX):
         group = chunks[i : i + _BATCH_MAX]
         try:
-            turn = llm.generate(
+            turn = await llm.generate(
                 DOC_SECTION_SYSTEM,
                 build_doc_sections_message(group),
                 BatchAnalysis,
@@ -129,16 +131,16 @@ class SentimentAgent(Agent):
         router = APIRouter(tags=["sentiment"])
 
         @router.post("/analyze", response_model=AnalyzeResponse)
-        def analyze(req: AnalyzeRequest, request: Request) -> AnalyzeResponse:
+        async def analyze(req: AnalyzeRequest, request: Request) -> AnalyzeResponse:
             # Auth (require_api_key) is enforced as a router-level dependency in build_app.
             tenant = resolve_tenant(request)
             # Per-tenant + per-IP rate limit FIRST, before the (paid) LLM call.
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             model = _model_override()
             try:
-                analysis = llm.generate(
+                analysis = await llm.generate(
                     SYSTEM,
                     build_user_message(req.text),
                     SentimentAnalysis,
@@ -155,7 +157,7 @@ class SentimentAgent(Agent):
             )
 
         @router.post("/batch", response_model=BatchResponse)
-        def batch(req: BatchRequest, request: Request) -> BatchResponse:
+        async def batch(req: BatchRequest, request: Request) -> BatchResponse:
             tenant = resolve_tenant(request)
             if len(req.texts) > _BATCH_MAX:
                 # Reject (don't silently drop) so the caller can chunk and retry.
@@ -164,12 +166,12 @@ class SentimentAgent(Agent):
                     detail=f"too many texts in one batch (max {_BATCH_MAX}); split into smaller batches.",
                 )
             # One LLM call regardless of item count -> one budget unit.
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             model = _model_override()
             try:
-                turn = llm.generate(
+                turn = await llm.generate(
                     BATCH_SYSTEM,
                     build_batch_message(req.texts),
                     BatchAnalysis,
@@ -197,7 +199,7 @@ class SentimentAgent(Agent):
             )
 
         @router.post("/intake", response_model=IntakeResponse)
-        def intake(req: IntakeRequest, request: Request) -> IntakeResponse:
+        async def intake(req: IntakeRequest, request: Request) -> IntakeResponse:
             """Source-aware analysis for any intake — a form submission, an inbound
             email, or a document. Forms/emails are normalized then classified in one
             call; long documents are chunked, scored per-section, and rolled up to an
@@ -205,7 +207,7 @@ class SentimentAgent(Agent):
             tenant = resolve_tenant(request)
             # One LLM call for forms/emails/short docs; long docs do one batch call
             # over their sections (bounded by the doc cap) -> still one budget unit.
-            enforce(_rate_key(request, tenant))
+            await run_in_threadpool(enforce, _rate_key(request, tenant))
             tokenbudget.enforce(tenant, resolve_tier(request))  # per-tenant daily token cap (D5)
 
             model = _model_override()
@@ -234,7 +236,7 @@ class SentimentAgent(Agent):
             if kind == "document":
                 chunks = chunk_text(content, _DOC_CHUNK_CHARS)
                 if len(chunks) > 1:
-                    analyses = _analyze_doc_sections(chunks, model)
+                    analyses = await _analyze_doc_sections(chunks, model)
                     overall = aggregate(analyses)
                     sections = [
                         SectionResult(**a.model_dump(), index=i, excerpt=excerpt(chunks[i]))
@@ -250,7 +252,7 @@ class SentimentAgent(Agent):
 
             # Single-call path: text, form, email, or a short (one-section) document.
             try:
-                analysis = llm.generate(
+                analysis = await llm.generate(
                     INTAKE_SYSTEM,
                     build_intake_message(kind, content),
                     SentimentAnalysis,
