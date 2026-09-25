@@ -36,6 +36,17 @@ TOKENS = Counter(
 )
 
 
+# Web research is charged PER SEARCH by the provider (Anthropic publishes $10 per 1,000), on the
+# workspace's own account — a cost that appears in no token count and so was visible nowhere. A
+# turn that searches is counted once; `outcome` separates a search that produced findings from one
+# that came back empty, because a provider failing quietly looks exactly like a restaurant with no
+# website until you can see the ratio.
+RESEARCH = Counter(
+    "agents_research_turns_total", "Web-research turns, by brain and outcome (found|empty|unsupported).",
+    ["brain", "outcome"], registry=REGISTRY,
+)
+
+
 class _TranscriptCollector:
     """Surface the transcript write counters (from core.transcripts) at scrape time, so durability
     loss is visible in Prometheus without a second bookkeeping path."""

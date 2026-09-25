@@ -50,25 +50,49 @@ class Usage:
         return self.prompt_tokens + self.completion_tokens
 
 
-# Token usage from the most recent generate() in this request context, for the caller (e.g. the
-# transcript recorder) to read without threading it through the typed return value. ContextVar keeps
-# it async/request-safe.
+# Token usage for THIS REQUEST, for the caller (e.g. the transcript recorder) to read without
+# threading it through the typed return value. ContextVar keeps it async/request-safe.
+#
+# CUMULATIVE, not last-write-wins. A turn was one provider call when this was written; a research
+# turn is three — the build that asks for a fact, the search, then the rebuild with the findings —
+# and overwriting meant the transcript, which is the durable per-tenant usage record, captured
+# only the last of them. The daily budget and the Prometheus counters were always charged for all
+# three (`record_current` sums, `.inc()` accumulates); it was the auditable record that
+# under-reported, which is the one a bill would be argued from.
 _LAST_USAGE: ContextVar[Usage | None] = ContextVar("_last_usage", default=None)
 
 
 def last_usage() -> Usage | None:
-    """Token usage from the most recent generate() in this request context (None if unknown)."""
+    """Token usage across every provider call made in this request context (None if unknown)."""
     return _LAST_USAGE.get()
+
+
+def reset_usage() -> None:
+    """Start a new request's accounting. Each request runs on its own ContextVar copy in a
+    threadpool worker, but a worker THREAD is reused, so without this a turn could inherit a
+    previous turn's total on the same thread."""
+    _LAST_USAGE.set(None)
 
 
 def _note_usage(brain: str, model: str, prompt_tokens: object, completion_tokens: object) -> None:
     """Record LLM token usage for the turn: expose it via last_usage() AND count it in Prometheus.
     Best-effort — a provider may omit usage, and accounting must NEVER break a turn."""
     try:
-        usage = Usage(prompt_tokens=int(prompt_tokens or 0), completion_tokens=int(completion_tokens or 0))
+        call = Usage(prompt_tokens=int(prompt_tokens or 0), completion_tokens=int(completion_tokens or 0))
     except (TypeError, ValueError):
-        usage = Usage()
-    _LAST_USAGE.set(usage)
+        call = Usage()
+
+    # THIS call's tokens go to the meters, which accumulate on their own — a Prometheus counter
+    # is `.inc()`d and the daily budget is `record_current`ed, both additive. The running TOTAL
+    # goes only to the ContextVar the transcript reads. Sending the running total to the meters
+    # instead charges call 1 again inside call 2's figure: a two-call turn of 42 + 48 billed 132
+    # rather than 90, every research turn silently overcharging the workspace's daily cap.
+    prior = _LAST_USAGE.get()
+    _LAST_USAGE.set(Usage(
+        prompt_tokens=(prior.prompt_tokens if prior else 0) + call.prompt_tokens,
+        completion_tokens=(prior.completion_tokens if prior else 0) + call.completion_tokens,
+    ))
+    usage = call
     try:
         from .metrics import TOKENS  # lazy import avoids any load-time import cycle
 
@@ -473,6 +497,7 @@ def research(query: str) -> "Research | None":
         return None
     brain = active_brain()
     if not research_supported(brain):
+        _note_research(brain, "unsupported")
         return None
     cred = _credential()
     if cred is None:
@@ -486,22 +511,42 @@ def research(query: str) -> "Research | None":
 
     try:
         if brain == "anthropic":
-            return _research_anthropic(query, chosen, api_key)
-        if brain == "openai":
-            return _research_openai(query, chosen, api_key)
-        return _research_gemini(query, chosen, api_key)
+            found = _research_anthropic(query, chosen, api_key)
+        elif brain == "openai":
+            found = _research_openai(query, chosen, api_key)
+        else:
+            found = _research_gemini(query, chosen, api_key)
     except Exception as exc:  # noqa: BLE001 - research is an enhancement, never a failure mode
         log.warning("research: %s search failed, building without it: %s", brain, exc)
+        _note_research(brain, "empty")
         return None
+    _note_research(brain, "found" if found is not None else "empty")
+    return found
+
+
+def _note_research(brain: str, outcome: str) -> None:
+    """Count a research turn. Best-effort: spend visibility must never break the turn itself."""
+    try:
+        from .metrics import RESEARCH  # lazy import avoids any load-time import cycle
+
+        RESEARCH.labels(brain, outcome).inc()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _research_anthropic(query: str, model: str, api_key: str | None) -> "Research | None":
     """Claude with Anthropic's server-side search: it runs the searches and returns cited prose."""
     from anthropic import Anthropic
 
-    client = _cached_client(_client_key("anthropic-research", api_key),
-                            lambda: Anthropic(api_key=api_key, timeout=RESEARCH_TIMEOUT_SECONDS))
+    # The SAME cached client as the build turn, with the longer deadline passed PER REQUEST.
+    # A separate `anthropic-research` cache key gave every researching workspace TWO entries in a
+    # 64-entry LRU, halving how many tenants one worker can hold before it starts evicting and
+    # rebuilding TLS + DNS on every turn. The client differed only by its timeout, and the SDK
+    # takes that per call.
+    client = _cached_client(_client_key("anthropic", api_key),
+                            lambda: Anthropic(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS))
     resp = client.messages.create(
+        timeout=RESEARCH_TIMEOUT_SECONDS,
         model=model,
         max_tokens=RESEARCH_MAX_TOKENS,
         system=RESEARCH_SYSTEM,
@@ -530,9 +575,10 @@ def _research_openai(query: str, model: str, api_key: str | None) -> "Research |
     separate research call is what makes that difference invisible to the agent."""
     from openai import OpenAI
 
-    client = _cached_client(_client_key("openai-research", api_key),
-                            lambda: OpenAI(api_key=api_key, timeout=RESEARCH_TIMEOUT_SECONDS))
+    client = _cached_client(_client_key("openai", api_key),  # shared with the build turn
+                            lambda: OpenAI(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS))
     resp = client.responses.create(
+        timeout=RESEARCH_TIMEOUT_SECONDS,
         model=model,
         instructions=RESEARCH_SYSTEM,
         input=query,
@@ -561,17 +607,19 @@ def _research_gemini(query: str, model: str, api_key: str | None) -> "Research |
     from google import genai
     from google.genai import types
 
-    client = _cached_client(_client_key("gemini-research", api_key), lambda: genai.Client(
+    client = _cached_client(_client_key("gemini", api_key), lambda: genai.Client(  # shared
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=int(RESEARCH_TIMEOUT_SECONDS * 1000)),
+        http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),
     ))
     resp = client.models.generate_content(
         model=model,
         contents=query,
         config=types.GenerateContentConfig(
             system_instruction=RESEARCH_SYSTEM,
-            # No search cap exists on this API (see RESEARCH_MAX_USES); the output ceiling and the
-            # client timeout are what bound a Gemini research turn.
+            # No search cap exists on this API (see RESEARCH_MAX_USES); the output ceiling and
+            # this deadline are what bound a Gemini research turn. Per request, so the client
+            # itself stays shared with the build turn.
+            http_options=types.HttpOptions(timeout=int(RESEARCH_TIMEOUT_SECONDS * 1000)),
             max_output_tokens=RESEARCH_MAX_TOKENS,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         ),
