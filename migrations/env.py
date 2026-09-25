@@ -39,6 +39,12 @@ def _url() -> str:
     # Render/Heroku hand out postgres://; SQLAlchemy requires the postgresql:// scheme.
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
+    # Name the driver we actually ship. A bare postgresql:// lets SQLAlchemy choose, and that
+    # choice is not ours: 2.1 changed the default from psycopg2 to psycopg (v3), so the day it
+    # released this job began failing with "No module named 'psycopg'" on a repo where nothing
+    # had changed. We install psycopg2-binary, so say psycopg2.
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
     return url
 
 

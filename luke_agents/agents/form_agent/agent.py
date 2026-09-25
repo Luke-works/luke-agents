@@ -38,6 +38,13 @@ from .schema import (
 _STATIC = Path(__file__).parent / "static" / "index.html"
 
 
+_BUSY = (
+    "Your AI provider is rate-limiting LukeBuilds right now. That is your own provider "
+    "account's limit rather than ours, so waiting a few seconds usually clears it — or "
+    "switch to another connected provider."
+)
+
+
 def _rate_key(request: Request, tenant: str) -> str:
     """Budget key bound to the tenant + originating IP (Render sets X-Forwarded-For).
 
@@ -108,16 +115,14 @@ class FormAgent(Agent):
             except Exception as exc:  # invalid JSON, model/network error, rate limit, etc.
                 # Record failures too (excluded from training, useful for analysis).
                 _record(output=None, changed=None, error=f"{type(exc).__name__}: {exc}")
-                status = getattr(exc, "status_code", None)
-                text = str(exc).lower()
-                if status == 429 or "rate limit" in text or "429" in text:
-                    # Shared free/cheap quota is momentarily exhausted — degrade nicely.
-                    raise HTTPException(
-                        status_code=429,
-                        detail="LukeBuilds is getting a lot of requests right now. "
-                        "Please wait a few seconds and try again.",
-                    ) from exc
-                raise brain_http_error(exc) from exc
+                # Straight to the shared mapper, with this agent's wording. Branching on
+                # 429 here first skipped the two checks that deliberately run BEFORE the
+                # rate-limit branch in brain_http_error: an out-of-credit account arrives
+                # AS a 429, so it was told to "wait a few seconds" forever instead of
+                # "top up with your provider" — the exact failure that helper's docstring
+                # says it exists to prevent — and the X-AI-Credential header core-engine
+                # acts on was dropped with it.
+                raise brain_http_error(exc, busy_message=_BUSY) from exc
 
             # A LIFECYCLE action (check in / publish / undo) is NOT a field edit — ignore any
             # operations the model may have included and leave the form untouched; the app runs

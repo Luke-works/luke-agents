@@ -14,9 +14,14 @@ from fastapi import HTTPException
 
 log = logging.getLogger("luke_agents.brain")
 
+# Under bring-your-own-key the quota being hit belongs to the WORKSPACE, not to us. Saying
+# "the AI service is busy" sends someone to look at our status page over a limit only they can
+# see or raise — and a workspace with a second provider connected has a remedy this wording
+# hides. Agents override it with their own product name.
 _BUSY = (
-    "The AI service is receiving a lot of requests right now. "
-    "Please wait a few seconds and try again."
+    "Your AI provider is rate-limiting this workspace right now. That is your own provider "
+    "account's limit rather than ours, so waiting a few seconds usually clears it — or switch "
+    "to another connected provider."
 )
 _UNAVAILABLE = "The AI service is temporarily unavailable. Please try again shortly."
 _REJECTED = ("Your AI provider rejected this workspace's API key. "

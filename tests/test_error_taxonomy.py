@@ -50,3 +50,34 @@ def test_circuit_open_preserves_503(monkeypatch, tmp_path):
 def test_rate_limit_maps_to_429(monkeypatch, tmp_path):
     r = _chat(_client(monkeypatch, tmp_path, _raise(RuntimeError("rate limit reached"))))
     assert r.status_code == 429
+
+
+def test_out_of_credit_is_not_reported_as_a_passing_rate_limit(monkeypatch, tmp_path):
+    """An exhausted account arrives AS a 429 — it must not be dressed up as "try again".
+
+    The /chat handlers used to branch on 429 themselves and raise their own busy message,
+    which ran BEFORE brain_http_error's exhausted check. A workspace out of credit was told
+    to wait a few seconds, forever, and the X-AI-Credential signal core-engine acts on was
+    lost with it. Both halves are asserted here because both were broken by the same line.
+    """
+    exc = RuntimeError("429 insufficient_quota: you exceeded your current quota")
+    exc.status_code = 429
+    r = _chat(_client(monkeypatch, tmp_path, _raise(exc)))
+
+    assert r.status_code == 402, "out of credit is not a retry-in-a-moment condition"
+    assert r.headers.get("X-AI-Credential") == "exhausted"
+    assert "wait a few seconds" not in r.text.lower()
+    assert "quota" in r.text.lower() or "credit" in r.text.lower()
+
+
+def test_a_real_rate_limit_says_whose_limit_it_is(monkeypatch, tmp_path):
+    """Under bring-your-own-key the quota belongs to the WORKSPACE, not to us.
+
+    "The AI service is busy" sends someone to look at our status page over a limit only they
+    can see or raise, and hides the remedy a second connected provider would give them.
+    """
+    r = _chat(_client(monkeypatch, tmp_path, _raise(RuntimeError("rate limit reached"))))
+    assert r.status_code == 429
+    body = r.text.lower()
+    assert "your ai provider" in body
+    assert "your own provider" in body or "rather than ours" in body
