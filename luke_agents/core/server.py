@@ -240,6 +240,37 @@ def build_app(agents: list[Agent], *, default_slug: str | None = None, title: st
         # write counters. Open (no auth), like /health — it exposes no user data.
         return Response(content=render_metrics(), media_type=METRICS_CONTENT_TYPE)
 
+    @app.post("/model-ranking", dependencies=[Depends(require_api_key)])
+    def model_ranking(body: dict) -> dict:
+        """Which of these models are worth putting in front of someone for this job.
+
+        Called by core-engine, which holds the keys and therefore knows what a workspace can
+        actually reach; it passes that list in and we say which of them to recommend. Behind
+        the API-key gate but NOT `bind_credential`: ranking runs no turn and needs no key, and
+        requiring one would make the recommendation unavailable to exactly the workspace that
+        has not connected a provider yet.
+
+        Deliberately a POST: the offered list can be two dozen model ids, which is a query
+        string long enough to meet a proxy limit on a bad day.
+        """
+        from .model_rank import WINDOW_DAYS, recommend
+
+        agent_slug = str(body.get("agent") or "form")
+        provider = str(body.get("provider") or "")
+        offered = [str(m) for m in (body.get("offered") or [])]
+        if not offered:
+            return {"recommended": [], "basis": "none"}
+
+        stats = get_store().model_stats(agent_slug, days=WINDOW_DAYS)
+        picks = recommend(stats, offered=offered, provider=provider)
+        judged = {s.model for s in stats if s.proven}
+        # Say which it is. A curated guess and a measurement are different claims, and the UI
+        # should be able to word them differently rather than presenting both as fact.
+        basis = ("evidence" if picks and set(picks) <= judged
+                 else "mixed" if any(p in judged for p in picks)
+                 else "seed")
+        return {"recommended": picks, "basis": basis, "windowDays": WINDOW_DAYS}
+
     # The API-key gate is applied at the router level so it covers every agent
     # route uniformly — including any added later (#32). /health and / are declared
     # on the app above (outside any router) and stay open by design.
