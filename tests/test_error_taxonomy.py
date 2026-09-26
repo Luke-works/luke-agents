@@ -102,3 +102,43 @@ def test_a_provider_400_is_not_reported_as_a_passing_outage(monkeypatch, tmp_pat
     assert "model" in body
     # And still never echoes the provider's own wording.
     assert "tool_choice" not in body
+
+
+def test_a_timeout_says_it_timed_out(caplog):
+    """"Unavailable" and "timed out" send a person to different places. The first says check the
+    provider's status page; the second says the model was too slow for what you asked, and the
+    levers are a faster model or a smaller request.
+
+    A timeout carries NO status code, so it used to fall through into the generic 502 bucket with
+    connection failures and unknown errors — which is exactly what a workspace saw after three
+    30-second attempts against a slow Gemini model, with nothing telling them so.
+    """
+    import httpx
+
+    from luke_agents.core.errors import brain_http_error
+
+    for exc in (httpx.ReadTimeout("timed out"), TimeoutError("deadline exceeded")):
+        mapped = brain_http_error(exc)
+        assert mapped.status_code == 504, f"{type(exc).__name__} should be distinguishable"
+        assert "too long" in str(mapped.detail)
+        assert "unavailable" not in str(mapped.detail).lower()
+
+    # A connection failure genuinely IS unavailable — the distinction has to cut both ways.
+    assert brain_http_error(httpx.ConnectError("boom")).status_code == 502
+
+
+def test_one_call_cannot_outlive_its_budget_by_retrying():
+    """Retries MULTIPLY the timeout, and the arithmetic that justified the browser's wait forgot
+    them: 3 attempts x 30s is 90s for one call, so a research turn (build + search + rebuild)
+    could run ~206s against a client that gives up at 100. The turn could never report anything —
+    the same failure the 25s client abort caused, rediscovered a scale up."""
+    import luke_agents.core.llm as _llm
+
+    budget = _llm.LLM_CALL_BUDGET_SECONDS
+    worst_turn = 2 * budget + _llm.RESEARCH_TIMEOUT_SECONDS
+    assert worst_turn < 100, (
+        f"a research turn can take {worst_turn}s, past the client's 100s per-attempt budget "
+        "(luke-consumer-ui agentTransport DEFAULT_TIMEOUTS)"
+    )
+    # And the budget must actually bound the retries, not just be declared.
+    assert budget < (1 + _llm.LLM_MAX_RETRIES) * _llm.LLM_TIMEOUT_SECONDS
