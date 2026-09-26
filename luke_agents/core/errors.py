@@ -24,6 +24,12 @@ _BUSY = (
     "to another connected provider."
 )
 _UNAVAILABLE = "The AI service is temporarily unavailable. Please try again shortly."
+# A timeout is not "unavailable". The provider was reachable and simply did not finish in time,
+# and the difference decides what the person does next: "unavailable" sends them to check a status
+# page, when the levers they actually have are a faster model and a smaller request. Reported as
+# 504 so it is distinguishable in metrics too, rather than hiding inside the 502 bucket.
+_TIMED_OUT = ("The model took too long to answer and the request was stopped. Try a faster model, "
+              "or ask for less in one go — a large form is quicker built in a few steps.")
 _BAD_REQUEST = ("Your AI provider refused this request — usually the chosen model cannot do what "
                 "this assistant needs. Pick a different model, or switch provider.")
 _REJECTED = ("Your AI provider rejected this workspace's API key. "
@@ -137,6 +143,13 @@ def brain_http_error(exc: Exception, *, busy_message: str | None = None) -> HTTP
                              headers={CREDENTIAL_HEADER: "exhausted"})
     if status == 429 or "rate limit" in text or "429" in text:
         return HTTPException(status_code=429, detail=busy_message or _BUSY)
+    # Before the generic fall-through: a timeout carries NO status, so it used to land in the 502
+    # "temporarily unavailable" bucket with everything else — which is what a workspace saw after
+    # three 30-second attempts against a slow model, with nothing saying so.
+    if isinstance(exc, TimeoutError) or any(
+        m in text for m in ("timeout", "timed out", "deadline exceeded")
+    ):
+        return HTTPException(status_code=504, detail=_TIMED_OUT)
     if isinstance(status, int) and 500 <= status < 600:
         # e.g. BrainUnavailable(status_code=503) — preserve the upstream class, generic body.
         return HTTPException(status_code=status, detail=_UNAVAILABLE)

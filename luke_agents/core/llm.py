@@ -196,6 +196,17 @@ def _inflight_gate() -> "asyncio.Semaphore":
 # call is retried with backoff, and if a brain fails repeatedly the breaker opens to fail fast
 # (and stop hammering a down provider) until a short cooldown elapses.
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))                     # retries AFTER the first try
+# A ceiling on ONE generate() call INCLUDING its retries.
+#
+# Retries multiply the timeout, and the budget arithmetic that justified the client's wait forgot
+# them: 3 attempts x 30s is 90s for a single call, so a research turn (build + search + rebuild)
+# could run 206s against a browser that gives up at 100. A turn that times out therefore could
+# never report anything — the same failure the 25s client abort caused, rediscovered at a bigger
+# scale, because "worst case" was computed from the per-attempt timeout alone.
+#
+# 35s keeps a research turn at 35 + RESEARCH_TIMEOUT + 35 = 95s, inside the client's 100. Raise
+# this and the client budget in luke-consumer-ui's agentTransport must move with it.
+LLM_CALL_BUDGET_SECONDS = float(os.getenv("LLM_CALL_BUDGET_SECONDS", "35"))
 LLM_RETRY_BASE_SECONDS = float(os.getenv("LLM_RETRY_BASE_SECONDS", "0.25"))  # exponential backoff base
 LLM_BREAKER_THRESHOLD = int(os.getenv("LLM_BREAKER_THRESHOLD", "5"))         # consecutive fails → open
 LLM_BREAKER_COOLDOWN_SECONDS = float(os.getenv("LLM_BREAKER_COOLDOWN_SECONDS", "15"))
@@ -361,6 +372,7 @@ async def _run_brain(brain: str, fn, scope: str | None = None):
     _breaker_gate(scope, brain)
     attempts = 1 + max(0, LLM_MAX_RETRIES)
     gate = _inflight_gate()
+    started = time.monotonic()
     last: BaseException | None = None
     for i in range(attempts):
         try:
@@ -373,6 +385,14 @@ async def _run_brain(brain: str, fn, scope: str | None = None):
             if not _is_transient_llm(exc):
                 raise  # not a provider-availability issue — don't retry or trip the breaker
             if i == attempts - 1:
+                break
+            # Stop retrying once another attempt cannot finish inside the budget. Without this
+            # the retry count silently multiplies the timeout and the caller — a browser with a
+            # deadline of its own — gives up before we ever answer.
+            spent = time.monotonic() - started
+            if spent + LLM_TIMEOUT_SECONDS > LLM_CALL_BUDGET_SECONDS:
+                log.warning("llm: %s brain out of budget after %.1fs (%d attempt(s)); not retrying",
+                            brain, spent, i + 1)
                 break
             log.warning("llm: transient %s on %s brain (attempt %d/%d): %s",
                         type(exc).__name__, brain, i + 1, attempts, exc)
